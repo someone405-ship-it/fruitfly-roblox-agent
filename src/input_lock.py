@@ -1,78 +1,93 @@
-"""Watch-only input lock. Physical keyboard/mouse swallowed while fly runs."""
-
+"""Selective watch-only lock: block input only while Roblox is focused. F9 always passes."""
 from __future__ import annotations
-
 import threading
 
 _lock = threading.Lock()
 _locked = False
-_kb_listener = None
-_mouse_listener = None
-
+_kb = None
+_mouse = None
 
 def is_locked() -> bool:
     return _locked
 
+def _foreground_is_roblox() -> bool:
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        length = user32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = (buf.value or "").lower()
+        return "roblox" in title
+    except Exception:
+        return False
 
 def lock() -> bool:
-    global _locked, _kb_listener, _mouse_listener
+    global _locked, _kb, _mouse
     with _lock:
         if _locked:
             return True
         try:
             from pynput import keyboard, mouse
+            from pynput.keyboard import Key
 
-            def on_key(_key):
-                return False
+            def on_press(key):
+                try:
+                    if key == Key.f9:
+                        return True
+                except Exception:
+                    pass
+                if _foreground_is_roblox():
+                    return False
+                return True
 
-            def on_click(_x, _y, _button, _pressed):
-                return False
+            def on_release(key):
+                try:
+                    if key == Key.f9:
+                        return True
+                except Exception:
+                    pass
+                if _foreground_is_roblox():
+                    return False
+                return True
 
-            def on_move(_x, _y):
-                return False
+            def on_click(x, y, button, pressed):
+                if _foreground_is_roblox():
+                    return False
+                return True
 
-            def on_scroll(_x, _y, _dx, _dy):
-                return False
+            def on_move(x, y):
+                if _foreground_is_roblox():
+                    return False
+                return True
 
-            _kb_listener = keyboard.Listener(
-                on_press=on_key, on_release=on_key, suppress=True
-            )
-            _mouse_listener = mouse.Listener(
-                on_click=on_click, on_move=on_move, on_scroll=on_scroll, suppress=True
-            )
-            _kb_listener.start()
-            _mouse_listener.start()
+            def on_scroll(x, y, dx, dy):
+                if _foreground_is_roblox():
+                    return False
+                return True
+
+            _kb = keyboard.Listener(on_press=on_press, on_release=on_release, suppress=True)
+            _mouse = mouse.Listener(on_click=on_click, on_move=on_move, on_scroll=on_scroll, suppress=True)
+            _kb.start()
+            _mouse.start()
             _locked = True
             return True
         except Exception:
-            try:
-                import ctypes
-                ctypes.windll.user32.BlockInput(True)
-                _locked = True
-                return True
-            except Exception:
-                _locked = False
-                return False
-
+            _locked = False
+            return False
 
 def unlock() -> None:
-    global _locked, _kb_listener, _mouse_listener
+    global _locked, _kb, _mouse
     with _lock:
-        if _kb_listener is not None:
-            try:
-                _kb_listener.stop()
-            except Exception:
-                pass
-            _kb_listener = None
-        if _mouse_listener is not None:
-            try:
-                _mouse_listener.stop()
-            except Exception:
-                pass
-            _mouse_listener = None
-        try:
-            import ctypes
-            ctypes.windll.user32.BlockInput(False)
-        except Exception:
-            pass
+        for lst in (_kb, _mouse):
+            if lst is not None:
+                try:
+                    lst.stop()
+                except Exception:
+                    pass
+        _kb = None
+        _mouse = None
         _locked = False

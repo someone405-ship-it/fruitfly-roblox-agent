@@ -1,17 +1,24 @@
-"""Advanced FruitFlyBrain — dual-timescale LIF reservoir + adaptive readout."""
-
+"""FruitFlyBrain — dual-timescale LIF reservoir (production)."""
 from __future__ import annotations
-
 import numpy as np
 from pathlib import Path
 from typing import Tuple
-
 from .config import (
     N_SENSORY, N_HIDDEN, N_MOTOR, DT_MS, TAU_MEM, TAU_SLOW,
     V_THRESH, V_RESET, NOISE_SCALE, SPARSITY, SPECTRAL_RADIUS,
     MOTOR_NAMES, WEIGHTS_PATH,
 )
 
+def _spectral_radius_estimate(W: np.ndarray, iters: int = 20) -> float:
+    n = W.shape[0]
+    v = np.random.default_rng(0).standard_normal(n).astype(np.float32)
+    v /= (np.linalg.norm(v) + 1e-9)
+    nrm = 1.0
+    for _ in range(iters):
+        v = W @ v
+        nrm = float(np.linalg.norm(v)) + 1e-9
+        v /= nrm
+    return float(nrm)
 
 class FruitFlyBrain:
     def __init__(self, seed: int = 42) -> None:
@@ -19,13 +26,12 @@ class FruitFlyBrain:
         self.rng = rng
         self.W_in = rng.normal(0.0, 0.35, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
         W = rng.normal(0.0, 1.0, size=(N_HIDDEN, N_HIDDEN)).astype(np.float32)
-        W *= (rng.random(W.shape) < SPARSITY)
+        W *= (rng.random(W.shape) < SPARSITY).astype(np.float32)
         signs = np.where(rng.random(N_HIDDEN) < 0.5, 1.0, -1.0).astype(np.float32)
         W *= signs[None, :]
-        eig = np.linalg.eigvals(W)
-        radius = float(np.max(np.abs(eig))) if eig.size else 1.0
+        radius = _spectral_radius_estimate(W)
         if radius > 1e-6:
-            W *= SPECTRAL_RADIUS / radius
+            W *= np.float32(SPECTRAL_RADIUS / radius)
         self.W_rec = W
         self.W_out = rng.normal(0.0, 0.25, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
         self.v = np.zeros(N_HIDDEN, dtype=np.float32)
@@ -36,21 +42,22 @@ class FruitFlyBrain:
         self.gain = np.ones(N_HIDDEN, dtype=np.float32)
         self.t = 0.0
         self.last_motor = np.zeros(N_MOTOR, dtype=np.float32)
-        self.spike_history = np.zeros((64, N_HIDDEN), dtype=np.float32)
-        self._hist_i = 0
         self.total_spikes = 0
         self.steps = 0
 
     def reset(self) -> None:
         self.v.fill(0.0); self.v_slow.fill(0.0); self.spikes.fill(0.0)
         self.rate.fill(0.0); self.rate_slow.fill(0.0); self.gain.fill(1.0)
-        self.t = 0.0; self.last_motor.fill(0.0); self.spike_history.fill(0.0)
-        self._hist_i = 0; self.total_spikes = 0; self.steps = 0
+        self.t = 0.0; self.last_motor.fill(0.0)
+        self.total_spikes = 0; self.steps = 0
 
     def step(self, sensory: np.ndarray) -> Tuple[np.ndarray, dict]:
         s = np.asarray(sensory, dtype=np.float32).ravel()
         if s.size != N_SENSORY:
-            s = np.resize(s, N_SENSORY)
+            out = np.zeros(N_SENSORY, dtype=np.float32)
+            n = min(s.size, N_SENSORY)
+            out[:n] = s[:n]
+            s = out
         I = self.W_in @ s + self.W_rec @ (self.spikes * self.gain)
         I += 0.15 * self.v_slow
         I += NOISE_SCALE * self.rng.standard_normal(N_HIDDEN).astype(np.float32)
@@ -69,8 +76,6 @@ class FruitFlyBrain:
         motor = self.W_out @ (0.7 * self.rate + 0.3 * self.rate_slow)
         motor = np.tanh(motor).astype(np.float32)
         self.last_motor = motor
-        self.spike_history[self._hist_i % 64] = self.spikes
-        self._hist_i += 1
         self.t += DT_MS
         info = {
             "t_ms": self.t, "n_spikes": n_sp,
@@ -84,7 +89,7 @@ class FruitFlyBrain:
         return motor, info
 
     def decide(self, motor: np.ndarray, threshold: float = 0.22) -> list:
-        active = [MOTOR_NAMES[i] for i in range(len(MOTOR_NAMES)) if motor[i] > threshold]
+        active = [MOTOR_NAMES[i] for i in range(min(len(MOTOR_NAMES), motor.size)) if motor[i] > threshold]
         pairs = [("forward", "back"), ("left", "right"), ("look_left", "look_right"), ("look_up", "look_down")]
         name_to_i = {n: i for i, n in enumerate(MOTOR_NAMES)}
         for a, b in pairs:
@@ -103,10 +108,16 @@ class FruitFlyBrain:
         path = Path(path)
         if not path.is_file():
             return False
-        data = np.load(path)
-        self.W_in = data["W_in"].astype(np.float32)
-        self.W_rec = data["W_rec"].astype(np.float32)
-        self.W_out = data["W_out"].astype(np.float32)
-        if "gain" in data:
-            self.gain = data["gain"].astype(np.float32)
-        return True
+        try:
+            data = np.load(path)
+            if data["W_in"].shape != self.W_in.shape: return False
+            if data["W_rec"].shape != self.W_rec.shape: return False
+            if data["W_out"].shape != self.W_out.shape: return False
+            self.W_in = data["W_in"].astype(np.float32)
+            self.W_rec = data["W_rec"].astype(np.float32)
+            self.W_out = data["W_out"].astype(np.float32)
+            if "gain" in data and data["gain"].shape == self.gain.shape:
+                self.gain = data["gain"].astype(np.float32)
+            return True
+        except Exception:
+            return False
