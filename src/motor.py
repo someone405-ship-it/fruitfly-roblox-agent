@@ -1,111 +1,101 @@
-"""
-Motor decoder — turns brain motor scores into real keyboard / mouse events.
-
-On Windows prefers pyrobloxbot when available; falls back to pydirectinput.
-"""
+"""Advanced motor decoder — expanded action set + focus helper."""
 
 from __future__ import annotations
 
-import time
 from typing import List, Optional, Set
 
-from .config import MOTOR_NAMES
-
-# optional heavy deps
 try:
     import pydirectinput
     pydirectinput.FAILSAFE = True
-    pydirectinput.PAUSE = 0.01
+    pydirectinput.PAUSE = 0.008
 except ImportError:
     pydirectinput = None
 
 try:
-    import pyrobloxbot as prb
+    import pygetwindow as gw
 except ImportError:
-    prb = None
+    gw = None
 
+from .config import MOTOR_NAMES
 
-# map action name → key or special handler
 KEY_MAP = {
-    "forward": "w",
-    "back": "s",
-    "left": "a",
-    "right": "d",
-    "jump": "space",
-    "sprint": "shift",
-    "interact": "e",
-    "chat_toggle": "/",
-    "ui_up": "up",
-    "ui_down": "down",
-    "ui_select": "enter",
-    "reset": "r",
+    "forward": "w", "back": "s", "left": "a", "right": "d",
+    "jump": "space", "sprint": "shift", "interact": "e",
+    "chat_toggle": "/", "ui_up": "up", "ui_down": "down",
+    "ui_select": "enter", "reset": "r", "crouch": "ctrl",
+    "emote": "b", "camera": "f", "secondary": None,
 }
 
 
 class MotorController:
     def __init__(self) -> None:
         self.active: Set[str] = set()
-        self.last_look = (0.0, 0.0)
         self.enabled = True
-        self.use_pyroblox = prb is not None
+        self.last_sent: List[str] = []
+        self.look_sensitivity = 10.0
+
+    def focus_roblox(self) -> bool:
+        if gw is None:
+            return False
+        try:
+            wins = [w for w in gw.getAllWindows() if w.title and "roblox" in w.title.lower()]
+            if not wins:
+                return False
+            w = max(wins, key=lambda x: x.width * x.height)
+            if w.isMinimized:
+                w.restore()
+            w.activate()
+            return True
+        except Exception:
+            return False
 
     def apply(self, actions: List[str], motor_scores: Optional[list] = None) -> List[str]:
-        """
-        Press / release keys so that only the given actions are held.
-        Returns the list of actions that were actually sent.
-        """
         if not self.enabled or pydirectinput is None:
             return []
-
         desired = set(actions)
         sent: List[str] = []
-
-        # release keys no longer wanted
         for name in list(self.active):
-            if name not in desired and name in KEY_MAP:
-                key = KEY_MAP[name]
+            if name not in desired and name in KEY_MAP and KEY_MAP[name]:
                 try:
-                    pydirectinput.keyUp(key)
+                    pydirectinput.keyUp(KEY_MAP[name])
                 except Exception:
                     pass
                 self.active.discard(name)
-
-        # press new keys
         for name in desired:
-            if name in KEY_MAP and name not in self.active:
-                key = KEY_MAP[name]
+            key = KEY_MAP.get(name)
+            if key and name not in self.active:
                 try:
                     pydirectinput.keyDown(key)
                     self.active.add(name)
                     sent.append(name)
                 except Exception:
                     pass
-
-        # mouse look (relative)
         if motor_scores is not None and len(motor_scores) >= 10:
-            dx = 0.0
-            dy = 0.0
-            # look_left / look_right / look_up / look_down are indices 6-9
-            dx -= float(motor_scores[6]) * 8.0
-            dx += float(motor_scores[7]) * 8.0
-            dy -= float(motor_scores[8]) * 6.0
-            dy += float(motor_scores[9]) * 6.0
-            if abs(dx) > 0.5 or abs(dy) > 0.5:
+            dx = (-float(motor_scores[6]) + float(motor_scores[7])) * self.look_sensitivity
+            dy = (-float(motor_scores[8]) + float(motor_scores[9])) * (self.look_sensitivity * 0.75)
+            if abs(dx) > 0.4 or abs(dy) > 0.4:
                 try:
                     pydirectinput.moveRel(int(dx), int(dy), relative=True)
-                    sent.append(f"look({dx:.1f},{dy:.1f})")
+                    sent.append(f"look({dx:.0f},{dy:.0f})")
                 except Exception:
                     pass
-
+        if "secondary" in desired:
+            try:
+                pydirectinput.click(button="right")
+                sent.append("secondary")
+            except Exception:
+                pass
+        self.last_sent = sent
         return sent
 
     def release_all(self) -> None:
         if pydirectinput is None:
             return
         for name in list(self.active):
-            if name in KEY_MAP:
+            key = KEY_MAP.get(name)
+            if key:
                 try:
-                    pydirectinput.keyUp(KEY_MAP[name])
+                    pydirectinput.keyUp(key)
                 except Exception:
                     pass
         self.active.clear()
