@@ -1,7 +1,12 @@
-"""FruitFly advanced — setup gate, Start/Stop after ready, watch-only lock."""
+"""FruitFly Roblox Agent — production main.
+
+Setup gate → START/STOP appear when ready.
+START: fly controls Roblox, watch-only lock on Roblox focus.
+STOP / F9: pause + unlock.
+"""
 from __future__ import annotations
-import sys, time
-from typing import List
+import sys
+import time
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
@@ -33,7 +38,7 @@ class AgentWorker(QThread):
     motor_ready = pyqtSignal(dict, list)
     worker_ready = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._running = False
         self._paused = True
@@ -43,12 +48,11 @@ class AgentWorker(QThread):
         self.motor = MotorController()
         self.logger = ActionLogger()
         self.trainer = Trainer(self.brain)
-        self._host_keys: List[str] = []
         self.auto_focus = True
 
-    def run(self):
+    def run(self) -> None:
         self._running = True
-        self.log_ready.emit("brain online — waiting for setup")
+        self.log_ready.emit("brain online")
         self.worker_ready.emit()
         while self._running:
             if self._paused:
@@ -56,7 +60,7 @@ class AgentWorker(QThread):
                 continue
             t0 = time.perf_counter()
             try:
-                if self.auto_focus and self.brain.steps % 20 == 0:
+                if self.auto_focus and self.brain.steps % 25 == 0:
                     self.motor.focus_roblox()
                 frame = self.vision.capture()
                 sensory = self.vision.encode(frame)
@@ -72,7 +76,8 @@ class AgentWorker(QThread):
                 self.status_ready.emit("WATCH ONLY — fly controlling Roblox")
             except Exception as e:
                 self.log_ready.emit(f"error: {e}")
-            self.msleep(max(1, int(33 - (time.perf_counter() - t0) * 1000)))
+            dt = (time.perf_counter() - t0) * 1000.0
+            self.msleep(max(1, int(33 - dt)))
         self.motor.release_all()
         self.vision.close()
         try:
@@ -81,39 +86,39 @@ class AgentWorker(QThread):
             pass
         input_lock.unlock()
 
-    def start_fly(self):
-        self._paused = False
+    def start_fly(self) -> None:
         self.motor.resume()
         self.motor.focus_roblox()
         ok = input_lock.lock()
+        self._paused = False
         self.log_ready.emit(
-            "START — watch only; your keyboard/mouse blocked"
-            if ok else "START — fly on (lock fallback)"
+            "START — watch only (Roblox input blocked)" if ok
+            else "START — fly on (input lock not available)"
         )
 
-    def stop_fly(self):
+    def stop_fly(self) -> None:
         self._paused = True
         self.motor.release_all()
         input_lock.unlock()
-        self.log_ready.emit("STOP — unlocked; you can use mouse/keyboard")
-        self.status_ready.emit("stopped — unlocked")
+        self.log_ready.emit("STOP — unlocked")
+        self.status_ready.emit("stopped")
 
-    def emergency(self):
+    def emergency(self) -> None:
         self._paused = True
         self.motor.emergency_stop()
         input_lock.unlock()
         self.log_ready.emit("F9 emergency — unlocked")
 
-    def stop(self):
+    def stop(self) -> None:
         self._running = False
         self.motor.release_all()
         input_lock.unlock()
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("FruitFly ADVANCED — watch only")
+        self.setWindowTitle("FruitFly Roblox Agent")
         self.resize(WINDOW_W, WINDOW_H)
         self.setStyleSheet(self._ss())
         self._flying = False
@@ -132,29 +137,31 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F9"), self, activated=self._on_emergency)
         QShortcut(QKeySequence("Esc"), self, activated=self.close)
         self.worker.start()
-        QTimer.singleShot(200, self._run_setup)
+        QTimer.singleShot(250, self._run_setup)
 
-    def _ss(self):
+    def _ss(self) -> str:
         return f"""
-        QMainWindow, QWidget {{ background:{BG_DEEP}; color:{TEXT_PRIMARY}; }}
+        QMainWindow, QWidget {{ background:{BG_DEEP}; color:{TEXT_PRIMARY}; font-family:Segoe UI,sans-serif; }}
         QFrame#panel {{ background:{BG_PANEL}; border:1px solid {BORDER}; border-radius:12px; }}
         QPushButton {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:8px; padding:10px 18px; font-weight:600; }}
-        QPushButton#startBtn {{ background:{SUCCESS}; color:#0B0E14; border:none; font-size:14px; min-width:120px; }}
-        QPushButton#stopBtn {{ background:{DANGER}; color:white; border:none; font-size:14px; min-width:120px; }}
+        QPushButton#startBtn {{ background:{SUCCESS}; color:#0B0E14; border:none; font-size:15px; min-width:130px; }}
+        QPushButton#stopBtn {{ background:{DANGER}; color:white; border:none; font-size:15px; min-width:130px; }}
         QPushButton:disabled {{ color:{TEXT_SECONDARY}; }}
-        QTextEdit {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:8px; color:{TEXT_SECONDARY}; font-family:Consolas; font-size:12px; }}
+        QTextEdit {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:8px;
+                     color:{TEXT_SECONDARY}; font-family:Consolas,monospace; font-size:12px; }}
         QLabel#title {{ color:{ACCENT}; font-size:18px; font-weight:700; }}
         QLabel#setupLbl {{ color:{TEXT_SECONDARY}; font-size:13px; padding:8px; }}
         QLabel#watchLbl {{ color:{DANGER}; font-size:13px; font-weight:700; padding:6px; }}
+        QStatusBar {{ background:{BG_PANEL}; color:{TEXT_SECONDARY}; }}
         """
 
-    def _build(self):
+    def _build(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(14, 14, 14, 8)
         header = QHBoxLayout()
-        title = QLabel("FRUITFLY ADVANCED")
+        title = QLabel("FRUITFLY ROBLOX AGENT")
         title.setObjectName("title")
         header.addWidget(title)
         header.addStretch()
@@ -163,29 +170,28 @@ class MainWindow(QMainWindow):
         self.setup_lbl.setObjectName("setupLbl")
         self.setup_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(self.setup_lbl)
-        self.ctrl_row = QHBoxLayout()
-        self.ctrl_row.addStretch()
+        ctrl = QHBoxLayout()
+        ctrl.addStretch()
         self.btn_start = QPushButton("START")
         self.btn_start.setObjectName("startBtn")
         self.btn_start.clicked.connect(self._on_start)
         self.btn_start.setVisible(False)
-        self.ctrl_row.addWidget(self.btn_start)
+        ctrl.addWidget(self.btn_start)
         self.btn_stop = QPushButton("STOP")
         self.btn_stop.setObjectName("stopBtn")
         self.btn_stop.clicked.connect(self._on_stop)
         self.btn_stop.setVisible(False)
         self.btn_stop.setEnabled(False)
-        self.ctrl_row.addWidget(self.btn_stop)
-        self.ctrl_row.addStretch()
-        root.addLayout(self.ctrl_row)
+        ctrl.addWidget(self.btn_stop)
+        ctrl.addStretch()
+        root.addLayout(ctrl)
         self.watch_lbl = QLabel("")
         self.watch_lbl.setObjectName("watchLbl")
         self.watch_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.watch_lbl.setVisible(False)
         root.addWidget(self.watch_lbl)
         split = QSplitter(Qt.Orientation.Horizontal)
-        left = QFrame()
-        left.setObjectName("panel")
+        left = QFrame(); left.setObjectName("panel")
         ll = QVBoxLayout(left)
         self.monitor = LiveMonitor()
         ll.addWidget(self.monitor)
@@ -194,14 +200,12 @@ class MainWindow(QMainWindow):
         self.log_view.setMinimumHeight(120)
         ll.addWidget(self.log_view)
         split.addWidget(left)
-        mid = QFrame()
-        mid.setObjectName("panel")
+        mid = QFrame(); mid.setObjectName("panel")
         ml = QVBoxLayout(mid)
         self.motor_panel = MotorOutputPanel()
         ml.addWidget(self.motor_panel)
         split.addWidget(mid)
-        right = QFrame()
-        right.setObjectName("panel")
+        right = QFrame(); right.setObjectName("panel")
         rl = QVBoxLayout(right)
         self.fly_kb = FlyKeyboardWidget()
         rl.addWidget(self.fly_kb)
@@ -215,50 +219,50 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
         self.status.showMessage("setup in progress…")
 
-    def _run_setup(self):
+    def _run_setup(self) -> None:
         self.log_view.append("setup: locating Roblox…")
         path = find_roblox_player()
         if path:
             self.log_view.append(f"setup: found {path}")
         ok, msg = launch_roblox(wait_seconds=7.0)
         self.log_view.append(f"setup: {msg}")
-        self._roblox_ok = ok or is_roblox_running()
+        self._roblox_ok = bool(ok) or is_roblox_running()
         if not self._roblox_ok:
-            self.setup_lbl.setText("Roblox not running — open Roblox once, app will detect it")
+            self.setup_lbl.setText("Waiting for Roblox… open Roblox once if needed")
             self.status.showMessage("waiting for Roblox…")
-            QTimer.singleShot(3000, self._recheck_roblox)
+            QTimer.singleShot(2500, self._recheck_roblox)
             return
         self._try_finish_setup()
 
-    def _recheck_roblox(self):
+    def _recheck_roblox(self) -> None:
         if is_roblox_running():
             self._roblox_ok = True
             self.log_view.append("setup: Roblox detected")
             self._try_finish_setup()
         else:
-            QTimer.singleShot(3000, self._recheck_roblox)
+            QTimer.singleShot(2500, self._recheck_roblox)
 
-    def _on_worker_ready(self):
+    def _on_worker_ready(self) -> None:
         self._worker_ok = True
         self.log_view.append("setup: brain worker ready")
         self._try_finish_setup()
 
-    def _try_finish_setup(self):
+    def _try_finish_setup(self) -> None:
         if self._setup_done:
             return
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
         self.setup_lbl.setText("READY — press START. You only watch; the fly drives Roblox.")
-        self.setup_lbl.setStyleSheet(f"color: {SUCCESS}; font-size: 13px; font-weight: 600;")
+        self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.status.showMessage("ready — START when you want the fly to play")
-        self.log_view.append("setup complete — Start/Stop visible")
+        self.status.showMessage("ready")
+        self.log_view.append("setup complete")
 
-    def _on_start(self):
+    def _on_start(self) -> None:
         if not self._setup_done or self._flying:
             return
         if not is_roblox_running():
@@ -268,11 +272,11 @@ class MainWindow(QMainWindow):
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — do not touch Roblox. Fly has control.")
+        self.watch_lbl.setText("WATCH ONLY — Roblox input blocked while focused. STOP or F9 to unlock.")
         self.watch_lbl.setVisible(True)
         self.status.showMessage("running — watch only")
 
-    def _on_stop(self):
+    def _on_stop(self) -> None:
         if not self._flying:
             return
         self.worker.stop_fly()
@@ -282,7 +286,7 @@ class MainWindow(QMainWindow):
         self.watch_lbl.setVisible(False)
         self.status.showMessage("stopped")
 
-    def _on_emergency(self):
+    def _on_emergency(self) -> None:
         self.worker.emergency()
         self._flying = False
         if self._setup_done:
@@ -290,40 +294,40 @@ class MainWindow(QMainWindow):
             self.btn_stop.setEnabled(False)
         self.watch_lbl.setVisible(False)
 
-    def _on_frame(self, f):
+    def _on_frame(self, f) -> None:
         self.monitor.update_frame(f)
 
-    def _on_log(self, m):
+    def _on_log(self, m: str) -> None:
         self.log_view.append(m)
         sb = self.log_view.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def _on_status(self, t):
+    def _on_status(self, t: str) -> None:
         self.monitor.set_status(t)
         self.status.showMessage(t)
 
-    def _on_actions(self, a):
+    def _on_actions(self, a: list) -> None:
         self.fly_kb.set_active(a)
 
-    def _on_motor(self, d, a):
+    def _on_motor(self, d: dict, a: list) -> None:
         self.motor_panel.set_motor(d, a)
 
-    def _on_stats(self, info):
+    def _on_stats(self, info: dict) -> None:
         self.stats_lbl.setText(
-            f"t={info['t_ms']:.0f}ms steps={info.get('steps', 0)}\n"
-            f"spk={info['n_spikes']}\n"
+            f"t={info['t_ms']:.0f} ms  steps={info.get('steps', 0)}\n"
+            f"spikes={info['n_spikes']}  total={info.get('total_spikes', 0)}\n"
             f"rate={info['mean_rate']:.4f}\n"
             f"lock={'ON' if input_lock.is_locked() else 'off'}"
         )
 
-    def closeEvent(self, e):
+    def closeEvent(self, e) -> None:
         input_lock.unlock()
         self.worker.stop()
-        self.worker.wait(3000)
+        self.worker.wait(4000)
         e.accept()
 
 
-def main():
+def main() -> None:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     win = MainWindow()
