@@ -1,45 +1,28 @@
 name: Build Windows EXE
-
 on:
   push:
     branches: [main]
   workflow_dispatch:
   release:
     types: [published]
-
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
-
       - name: Build FruitFlyRoblox.exe
         run: |
-          pyinstaller --noconfirm --onefile --windowed --name FruitFlyRoblox --paths . --collect-all PyQt6 --hidden-import=src --hidden-import=src.main --hidden-import=src.brain --hidden-import=src.vision --hidden-import=src.motor --hidden-import=src.monitor --hidden-import=src.fly3d --hidden-import=src.logger --hidden-import=src.config --hidden-import=src.roblox_launcher --hidden-import=src.trainer run_app.py
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          pyinstaller --noconfirm --onefile --windowed --name FruitFlyRoblox --paths . --collect-all PyQt6 --hidden-import=src --hidden-import=src.main --hidden-import=src.brain --hidden-import=src.vision --hidden-import=src.motor --hidden-import=src.monitor --hidden-import=src.fly3d --hidden-import=src.logger --hidden-import=src.config --hidden-import=src.roblox_launcher --hidden-import=src.trainer --hidden-import=src.motor_panel run_app.py
+      - uses: actions/upload-artifact@v4
         with:
           name: FruitFlyRoblox-windows
           path: dist/FruitFlyRoblox.exe
           if-no-files-found: error
-
-      - name: Attach to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/FruitFlyRoblox.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
