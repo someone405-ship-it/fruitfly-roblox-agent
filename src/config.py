@@ -1,11 +1,7 @@
-"""Dark-theme tokens and runtime constants — Figma-inspired glass dark."""
+"""Advanced dark-theme tokens + expanded brain / motor constants."""
 
 from dataclasses import dataclass
-from typing import Tuple
 
-# ---------------------------------------------------------------------------
-# Theme (Figma dark glass)
-# ---------------------------------------------------------------------------
 BG_DEEP = "#0B0E14"
 BG_PANEL = "#12161F"
 BG_CARD = "#1A1F2B"
@@ -13,66 +9,53 @@ BG_ELEVATED = "#222833"
 BORDER = "#2A3140"
 ACCENT = "#00E5FF"
 ACCENT_DIM = "#00A8B8"
-ACCENT_GLOW = "rgba(0, 229, 255, 0.25)"
 TEXT_PRIMARY = "#E8ECF4"
 TEXT_SECONDARY = "#8B95A8"
 TEXT_MUTED = "#5A6578"
 DANGER = "#FF4D6A"
 SUCCESS = "#3DFF9A"
 WARNING = "#FFC14D"
+MOTOR_POS = "#00E5FF"
+MOTOR_NEG = "#FF4D6A"
 
-FONT_UI = "Segoe UI, Inter, system-ui, sans-serif"
-FONT_MONO = "Cascadia Code, Consolas, monospace"
-
-# ---------------------------------------------------------------------------
-# Brain
-# ---------------------------------------------------------------------------
-N_SENSORY = 64
-N_HIDDEN = 512
-N_MOTOR = 16  # WASD, Space, Shift, mouse dx/dy, jump, interact, chat, look, ...
-DT_MS = 20.0  # simulation step
-TAU_MEM = 20.0
+N_SENSORY = 128
+N_HIDDEN = 1024
+N_MOTOR = 20
+DT_MS = 16.0
+TAU_MEM = 18.0
+TAU_SLOW = 80.0
 V_THRESH = 1.0
 V_RESET = 0.0
-NOISE_SCALE = 0.05
+NOISE_SCALE = 0.04
+SPARSITY = 0.12
+SPECTRAL_RADIUS = 0.95
 
-# ---------------------------------------------------------------------------
-# Vision
-# ---------------------------------------------------------------------------
-CAPTURE_W = 320
-CAPTURE_H = 180
+CAPTURE_W = 400
+CAPTURE_H = 225
 FPS_TARGET = 30
 
-# ---------------------------------------------------------------------------
-# Motor mapping (index → action name)
-# ---------------------------------------------------------------------------
 MOTOR_NAMES = [
-    "forward",
-    "back",
-    "left",
-    "right",
-    "jump",
-    "sprint",
-    "look_left",
-    "look_right",
-    "look_up",
-    "look_down",
-    "interact",
-    "chat_toggle",
-    "ui_up",
-    "ui_down",
-    "ui_select",
-    "reset",
+    "forward", "back", "left", "right", "jump", "sprint",
+    "look_left", "look_right", "look_up", "look_down",
+    "interact", "chat_toggle", "ui_up", "ui_down", "ui_select", "reset",
+    "crouch", "emote", "camera", "secondary",
 ]
 
-# ---------------------------------------------------------------------------
-# UI layout
-# ---------------------------------------------------------------------------
-WINDOW_W = 1280
-WINDOW_H = 800
+MOTOR_LABELS = {
+    "forward": "W forward", "back": "S back", "left": "A left", "right": "D right",
+    "jump": "Space jump", "sprint": "Shift sprint", "look_left": "Look L",
+    "look_right": "Look R", "look_up": "Look Up", "look_down": "Look Dn",
+    "interact": "E interact", "chat_toggle": "Chat /", "ui_up": "UI up",
+    "ui_down": "UI down", "ui_select": "UI Enter", "reset": "R reset",
+    "crouch": "Ctrl crouch", "emote": "Emote", "camera": "Cam", "secondary": "RMB",
+}
+
+WINDOW_W = 1440
+WINDOW_H = 900
 MONITOR_W = 640
 MONITOR_H = 360
-LOG_LINES = 200
+LOG_LINES = 300
+WEIGHTS_PATH = "fly_brain_weights.npz"
 
 @dataclass
 class Theme:
@@ -85,6 +68,5 @@ class Theme:
     border: str = BORDER
     danger: str = DANGER
     success: str = SUCCESS
-
 
 THEME = Theme()
