@@ -20,7 +20,7 @@ jobs:
           pip install pyinstaller
       - name: Build FruitFlyRoblox.exe
         run: |
-          pyinstaller --noconfirm --onefile --windowed --name FruitFlyRoblox --paths . --collect-all PyQt6 --hidden-import=src --hidden-import=src.main --hidden-import=src.brain --hidden-import=src.vision --hidden-import=src.motor --hidden-import=src.monitor --hidden-import=src.fly3d --hidden-import=src.logger --hidden-import=src.config --hidden-import=src.roblox_launcher --hidden-import=src.trainer --hidden-import=src.motor_panel run_app.py
+          pyinstaller --noconfirm --onefile --windowed --name FruitFlyRoblox --paths . --collect-all PyQt6 --hidden-import=src --hidden-import=src.main --hidden-import=src.brain --hidden-import=src.vision --hidden-import=src.motor --hidden-import=src.monitor --hidden-import=src.fly3d --hidden-import=src.logger --hidden-import=src.config --hidden-import=src.roblox_launcher --hidden-import=src.trainer --hidden-import=src.motor_panel --hidden-import=src.input_lock run_app.py
       - uses: actions/upload-artifact@v4
         with:
           name: FruitFlyRoblox-windows
