@@ -1,4 +1,4 @@
-"""FruitFly Roblox Agent — 3072 neurons, kill/death, Figma UI."""
+"""FruitFly Roblox Agent — 8192 neurons, permanent skill memory, RMB look, full window."""
 from __future__ import annotations
 import sys
 import time
@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 )
 from .config import (
     WINDOW_W, WINDOW_H, BG_DEEP, BG_PANEL, BG_CARD, ACCENT,
-    TEXT_PRIMARY, TEXT_SECONDARY, BORDER, DANGER, SUCCESS, WEIGHTS_PATH, MOTOR_NAMES,
+    TEXT_PRIMARY, TEXT_SECONDARY, BORDER, DANGER, SUCCESS, WEIGHTS_PATH, MOTOR_NAMES, N_HIDDEN,
 )
 from .brain import FruitFlyBrain
 from .vision import VisionEncoder
@@ -18,7 +18,7 @@ from .motor import MotorController
 from .monitor import LiveMonitor
 from .fly3d import FlyKeyboardWidget
 from .logger import ActionLogger
-from .roblox_launcher import launch_roblox, is_roblox_running, find_roblox_player
+from .roblox_launcher import launch_roblox, is_roblox_running, find_roblox_player, maximize_roblox_window
 from .trainer import Trainer
 from .motor_panel import MotorOutputPanel
 from .behavior import BehaviorLayer
@@ -42,7 +42,7 @@ class AgentWorker(QThread):
         self._running = False
         self._paused = True
         self.brain = FruitFlyBrain(seed=42)
-        self.brain.load_weights(WEIGHTS_PATH)
+        loaded = self.brain.load_weights(WEIGHTS_PATH)
         self.vision = VisionEncoder()
         self.motor = MotorController()
         self.logger = ActionLogger()
@@ -52,13 +52,18 @@ class AgentWorker(QThread):
         self.auto_focus = True
         self.learning = False
         try:
-            self.trainer.bootstrap_explore(420)
+            self.trainer.bootstrap_explore(520)
         except Exception:
             pass
+        self._weights_loaded = loaded
 
     def run(self) -> None:
         self._running = True
-        self.log_ready.emit("brain online — 3072 neurons · kill/loot · death hurt · full autonomy")
+        mem = self.trainer.memory.summary()
+        self.log_ready.emit(f"brain online — {N_HIDDEN} neurons · permanent memory · RMB look · kill/loot")
+        self.log_ready.emit(f"skill memory: {mem}")
+        if self._weights_loaded:
+            self.log_ready.emit("loaded saved brain weights")
         if self.trainer.samples:
             self.log_ready.emit(f"pre-train samples={self.trainer.samples}")
         self.worker_ready.emit()
@@ -73,24 +78,32 @@ class AgentWorker(QThread):
                     sensory = self.vision.encode(frame)
                     motor, info = self.brain.step(sensory)
                     keys = host_learn.keys_down()
+                    meta = getattr(self.vision, "last_meta", {}) or {}
                     self.trainer.set_mode("imitation")
-                    self.trainer.record_host_keys(keys)
+                    self.trainer.record_host_keys(keys, meta=meta)
                     err = self.trainer.step_imitation()
                     self.frame_ready.emit(frame)
                     self.stats_ready.emit({**info, "learning": True, "imit_samples": self.trainer.imit_samples})
                     if keys:
                         self.log_ready.emit(f"learn <- {','.join(keys)} err={err:.3f} n={self.trainer.imit_samples}")
-                    self.status_ready.emit(f"LEARNING samples={self.trainer.imit_samples}")
-                    self.msleep(20)
+                    self.status_ready.emit(f"LEARNING samples={self.trainer.imit_samples} | {self.trainer.memory.summary()}")
+                    self.msleep(18)
                     continue
 
-                if self.auto_focus and self.brain.steps % 8 == 0:
-                    self.motor.focus_roblox()
+                if self.auto_focus and self.brain.steps % 10 == 0:
+                    self.motor.focus_roblox(maximize=True)
                 frame = self.vision.capture()
                 sensory = self.vision.encode(frame)
                 motor, info = self.brain.step(sensory)
                 meta = self.vision.last_meta
                 self.trainer.set_mode("reward")
+                # permanent memory bias into motor
+                try:
+                    mbias = self.trainer.memory.motor_bias_from_memory(meta, strength=0.28)
+                    if mbias.size == motor.size:
+                        motor = (0.72 * motor + 0.28 * mbias).astype(np.float32)
+                except Exception:
+                    pass
                 loom = float(meta.get("loom_score", 0.0))
                 motion = float(meta.get("motion", 0.0))
                 turn = float(motor[2] - motor[3]) if motor.size > 3 else 0.0
@@ -101,11 +114,15 @@ class AgentWorker(QThread):
                 motor, notes, binfo = self.behavior.modulate(motor, meta, circuit_bias=cbias)
                 info.update(binfo)
                 info.update(cread)
-                actions = self.brain.decide(motor, threshold=0.16)
+                actions = self.brain.decide(motor, threshold=0.15)
                 junk = {"emote", "crouch", "chat_toggle"}
                 if not any(t in notes for t in ("browse", "join_intent", "ui_scroll", "ui_select")):
                     junk |= {"ui_up", "ui_down", "ui_select"}
                 actions = [a for a in actions if not a.startswith("look_") and a not in junk]
+                # enable freelook with RMB when looking hard
+                if abs(float(motor[6]) - float(motor[7])) > 0.25 or abs(float(motor[8]) - float(motor[9])) > 0.25:
+                    if "rmb_look" not in actions:
+                        actions.append("rmb_look")
                 if "ui_scroll" in notes and "ui_down" not in actions:
                     actions.append("ui_down")
                 if "ui_select" in notes and "ui_select" not in actions:
@@ -138,6 +155,14 @@ class AgentWorker(QThread):
                         self.log_ready.emit(f"train r={rew:+.2f} n={self.trainer.samples}")
                 except Exception:
                     pass
+                # periodic permanent save
+                if self.brain.steps > 0 and self.brain.steps % 200 == 0:
+                    try:
+                        self.brain.save_weights(WEIGHTS_PATH)
+                        self.trainer.flush_memory()
+                        self.log_ready.emit(f"autosave brain + {self.trainer.memory.summary()}")
+                    except Exception:
+                        pass
                 sent = self.motor.apply(actions, motor.tolist())
                 chat = self.behavior.take_chat()
                 if chat:
@@ -146,7 +171,7 @@ class AgentWorker(QThread):
                 self.frame_ready.emit(frame)
                 self.actions_ready.emit(actions)
                 self.stats_ready.emit(info)
-                self.motor_ready.emit({n: float(motor[i]) for i, n in enumerate(MOTOR_NAMES)}, actions)
+                self.motor_ready.emit({n: float(motor[i]) for i, n in enumerate(MOTOR_NAMES) if i < motor.size}, actions)
                 if sent:
                     self.log_ready.emit(f"-> {', '.join(sent)} | {','.join(notes)} | spk={info['n_spikes']}")
                 self.status_ready.emit(
@@ -155,11 +180,13 @@ class AgentWorker(QThread):
             except Exception as e:
                 self.log_ready.emit(f"error: {type(e).__name__}: {e}")
             dt = (time.perf_counter() - t0) * 1000.0
-            self.msleep(max(1, int(28 - dt)))
+            self.msleep(max(1, int(26 - dt)))
         self.motor.release_all()
         self.vision.close()
         try:
             self.brain.save_weights(WEIGHTS_PATH)
+            self.trainer.flush_memory()
+            self.log_ready.emit("final save — brain + skill memory")
         except Exception:
             pass
         input_lock.unlock()
@@ -167,16 +194,22 @@ class AgentWorker(QThread):
 
     def start_fly(self) -> None:
         self.motor.resume()
-        self.motor.focus_roblox()
+        maximize_roblox_window()
+        self.motor.focus_roblox(maximize=True)
         ok = input_lock.lock()
         self._paused = False
-        self.log_ready.emit("START — autonomy" if ok else "START")
+        self.log_ready.emit("START — autonomy + full Roblox window" if ok else "START")
 
     def stop_fly(self) -> None:
         self._paused = True
         self.motor.release_all()
         input_lock.unlock()
-        self.log_ready.emit("STOP")
+        try:
+            self.brain.save_weights(WEIGHTS_PATH)
+            self.trainer.flush_memory()
+        except Exception:
+            pass
+        self.log_ready.emit("STOP — saved")
 
     def emergency(self) -> None:
         self._paused = True
@@ -184,7 +217,12 @@ class AgentWorker(QThread):
         input_lock.unlock()
         host_learn.stop()
         self.learning = False
-        self.log_ready.emit("F9 emergency")
+        try:
+            self.brain.save_weights(WEIGHTS_PATH)
+            self.trainer.flush_memory()
+        except Exception:
+            pass
+        self.log_ready.emit("F9 emergency — saved")
 
     def stop(self) -> None:
         self._running = False
@@ -193,10 +231,14 @@ class AgentWorker(QThread):
         host_learn.stop()
 
 
+# need numpy alias for worker bias line
+import numpy as np  # noqa: E402
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("FruitFly Roblox Agent")
+        self.setWindowTitle("FruitFly Roblox Agent — Advanced")
         self.resize(WINDOW_W, WINDOW_H)
         self.setStyleSheet(self._ss())
         self._flying = False
@@ -241,7 +283,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(16, 16, 16, 10)
         root.setSpacing(10)
         header = QHBoxLayout()
-        title = QLabel("FRUITFLY ROBLOX AGENT")
+        title = QLabel("FRUITFLY ROBLOX AGENT — ADVANCED")
         title.setObjectName("title")
         header.addWidget(title)
         header.addStretch()
@@ -316,8 +358,9 @@ class MainWindow(QMainWindow):
         path = find_roblox_player()
         if path:
             self.log_view.append(f"setup: found {path}")
-        ok, msg = launch_roblox(wait_seconds=7.0)
+        ok, msg = launch_roblox(wait_seconds=8.0, maximize=True)
         self.log_view.append(f"setup: {msg}")
+        maximize_roblox_window()
         self._roblox_ok = bool(ok) or is_roblox_running()
         if not self._roblox_ok:
             self.setup_lbl.setText("Waiting for Roblox…")
@@ -327,6 +370,7 @@ class MainWindow(QMainWindow):
 
     def _recheck_roblox(self) -> None:
         if is_roblox_running():
+            maximize_roblox_window()
             self._roblox_ok = True
             self._try_finish_setup()
         else:
@@ -340,7 +384,8 @@ class MainWindow(QMainWindow):
         if self._setup_done or not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("3072 neurons · kill→food gamble · death→hurt · LEARN trains · free will")
+        maximize_roblox_window()
+        self.setup_lbl.setText(f"{N_HIDDEN} neurons · permanent skill memory · RMB look · LEARN forever · full window")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
@@ -356,7 +401,8 @@ class MainWindow(QMainWindow):
         if not info:
             self.log_view.append("No Roblox window")
             return False
-        self.log_view.append(f"Roblox window: {info.get('title')}")
+        maximize_roblox_window()
+        self.log_view.append(f"Roblox window: {info.get('title')} (maximized)")
         return True
 
     def _on_start(self) -> None:
@@ -366,14 +412,14 @@ class MainWindow(QMainWindow):
             self.btn_learn.setChecked(False)
             self._on_learn()
         if not is_roblox_running():
-            launch_roblox(6.0)
+            launch_roblox(6.0, maximize=True)
         if not self._roblox_ready_for_play():
             return
         self.worker.start_fly()
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("AUTONOMY — kill rewards food · death hurts · STOP/F9")
+        self.watch_lbl.setText("AUTONOMY — RMB look · memory forever · kill rewards · STOP/F9")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -405,13 +451,18 @@ class MainWindow(QMainWindow):
             self.worker.learning = True
             self.worker._paused = False
             self.btn_learn.setText("LEARNING… (stop)")
-            self.log_view.append("LEARN ON — play; he copies keys")
+            self.log_view.append("LEARN ON — play; keys+RMB tracked · skills saved forever")
         else:
             host_learn.stop()
             self.worker.learning = False
             self.worker._paused = True
+            try:
+                self.worker.brain.save_weights(WEIGHTS_PATH)
+                summary = self.worker.trainer.flush_memory()
+                self.log_view.append(f"LEARN OFF n={self.worker.trainer.imit_samples} · {summary} · weights saved")
+            except Exception:
+                self.log_view.append(f"LEARN OFF n={self.worker.trainer.imit_samples}")
             self.btn_learn.setText("LEARN FROM ME")
-            self.log_view.append(f"LEARN OFF n={self.worker.trainer.imit_samples}")
 
     def _on_emergency(self) -> None:
         self.worker.emergency()
@@ -442,40 +493,35 @@ class MainWindow(QMainWindow):
         self.motor_panel.set_motor(d, a)
         try:
             self.mouse3d.set_delta(*self.worker.motor.last_mouse)
-            self.mouse3d.set_buttons(lmb=("secondary" in a), rmb=False)
+            self.mouse3d.set_buttons(lmb=("secondary" in a), rmb=("rmb_look" in a))
         except Exception:
             pass
 
     def _on_stats(self, info: dict) -> None:
-        self.circuit_panel.set_rates(info)
         try:
-            self.fly_kb.set_state(
-                pain=float(info.get("pain", 0)),
-                lock_in=bool(info.get("lock_in") or info.get("combat_mode") == "fight"),
+            self.circuit_panel.set_circuit(info)
+        except Exception:
+            pass
+        try:
+            n = info.get("n_hidden", N_HIDDEN)
+            self.stats_lbl.setText(
+                f"neurons={n} steps={info.get('steps',0)} spikes={info.get('n_spikes',0)} "
+                f"rate={info.get('mean_rate',0):.3f} power={info.get('power','?')}"
             )
         except Exception:
             pass
-        self.stats_lbl.setText(
-            f"t={info.get('t_ms',0):.0f}ms steps={info.get('steps',0)}\n"
-            f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
-            f"pain={info.get('pain',0):.2f} anger={info.get('anger',0):.2f}\n"
-            f"mode={info.get('combat_mode','?')} goal={info.get('goal','?')}\n"
-            f"kills={info.get('loot_kills',0)} deaths={info.get('deaths',0)} food={info.get('loot_food',0)}\n"
-            f"power={info.get('power','dormant')} x{info.get('power_mult',1):.2f} neurons=3072\n"
-            f"drop={info.get('loot_last_drop','-')} train={self.worker.trainer.samples}"
-        )
 
-    def closeEvent(self, e) -> None:
-        host_learn.stop()
-        input_lock.unlock()
-        self.worker.stop()
-        self.worker.wait(4000)
-        e.accept()
+    def closeEvent(self, event) -> None:
+        try:
+            self.worker.stop()
+            self.worker.wait(2000)
+        except Exception:
+            pass
+        event.accept()
 
 
 def main() -> None:
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
