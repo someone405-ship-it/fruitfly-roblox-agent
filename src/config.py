@@ -1,4 +1,4 @@
-"""FruitFly — FlyWire-scale 139,255 LIF units (block-sparse) + ultra-fast I/O."""
+"""FruitFly — FlyWire-scale 139,255 LIF + potential unlock + ultra-fast I/O."""
 
 from dataclasses import dataclass
 
@@ -18,26 +18,24 @@ WARNING = "#FFC14D"
 MOTOR_POS = "#00E5FF"
 MOTOR_NEG = "#FF4D6A"
 
-# Official FlyWire FAFB v783 whole-brain neuron count (Dorkenwald et al. 2024):
-# 139,255 proofread neurons. We run that many LIF units block-sparse.
 N_HIDDEN = 139255
 COL_SIZE = 8192
-N_COLS = (N_HIDDEN + COL_SIZE - 1) // COL_SIZE  # 17 columns (last partial)
+N_COLS = (N_HIDDEN + COL_SIZE - 1) // COL_SIZE
 N_SENSORY = 384
 N_MOTOR = 26
-DT_MS = 5.0
-TAU_MEM = 9.0
-TAU_SLOW = 50.0
+DT_MS = 4.0
+TAU_MEM = 8.0
+TAU_SLOW = 45.0
 V_THRESH = 1.0
 V_RESET = 0.0
-NOISE_SCALE = 0.016
+NOISE_SCALE = 0.014
 SPARSITY = 0.035
 INTER_SPARSITY = 0.003
 SPECTRAL_RADIUS = 0.93
 
 CAPTURE_W = 480
 CAPTURE_H = 270
-FPS_TARGET = 60
+FPS_TARGET = 72
 
 MOTOR_NAMES = [
     "forward", "back", "left", "right", "jump", "sprint",
@@ -67,11 +65,19 @@ SKILL_MEMORY_PATH = "fly_skill_memory.json"
 EYE_MEMORY_PATH = "fly_eye_memory.npz"
 MISTAKE_MEMORY_PATH = "fly_mistake_memory.json"
 WIN_MEMORY_PATH = "fly_win_memory.json"
+POTENTIAL_PATH = "fly_potential.json"
 
-LOOK_SENSITIVITY = 95.0
-LOOK_MAX_PX = 165
-LOOK_INTERVAL = 0.004
-LOOK_DEADZONE = 0.025
+# Ultra-fast human-plus I/O
+LOOK_SENSITIVITY = 110.0
+LOOK_MAX_PX = 185
+LOOK_INTERVAL = 0.003
+LOOK_DEADZONE = 0.02
+
+# Decision speed
+DECIDE_THRESHOLD_BASE = 0.09
+DECIDE_THRESHOLD_MIN = 0.05
+REFLEX_ENABLED = True
+POTENTIAL_ENABLED = True
 
 SETUP_ROBLOX_WAIT_S = 45.0
 SETUP_ROBLOX_RETRIES = 12
@@ -85,6 +91,8 @@ POWER_TIERS = [
     (15, 1.28, "ascendant"),
     (25, 1.42, "unlocked"),
     (40, 1.55, "ascended"),
+    (60, 1.72, "overdrive"),
+    (90, 1.95, "limit_break"),
 ]
 
 
