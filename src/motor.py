@@ -1,4 +1,4 @@
-"""Motor — keys + mouse via SendInput (pydirectinput fallback)."""
+"""Motor — SendInput keys/mouse + attack click."""
 from __future__ import annotations
 from typing import List, Optional, Set
 import time
@@ -11,7 +11,6 @@ try:
     pydirectinput.PAUSE = 0.0
 except ImportError:
     pydirectinput = None
-
 try:
     import pygetwindow as gw
 except ImportError:
@@ -20,6 +19,8 @@ except ImportError:
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
 MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
 KEYEVENTF_KEYUP = 0x0002
 
 if hasattr(ctypes, "windll"):
@@ -56,9 +57,9 @@ KEY_MAP = {
     "ui_select": "enter", "reset": "r", "crouch": "ctrl",
     "emote": "b", "camera": "f", "secondary": None,
 }
-PULSE_ACTIONS = {"chat_toggle", "interact", "reset", "emote", "camera", "ui_select", "secondary"}
+PULSE_ACTIONS = {"chat_toggle", "interact", "reset", "emote", "camera", "ui_select"}
 
-def _si_move(dx: int, dy: int) -> bool:
+def _si_move(dx, dy):
     if _SendInput is None or INPUT is None:
         return False
     inp = INPUT()
@@ -66,7 +67,7 @@ def _si_move(dx: int, dy: int) -> bool:
     inp.union.mi = MOUSEINPUT(dx, dy, 0, MOUSEEVENTF_MOVE, 0, None)
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
-def _si_key(vk: int, up: bool = False) -> bool:
+def _si_key(vk, up=False):
     if _SendInput is None or INPUT is None:
         return False
     scan = _MapVirtualKey(vk, 0)
@@ -77,20 +78,20 @@ def _si_key(vk: int, up: bool = False) -> bool:
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
 class MotorController:
-    def __init__(self) -> None:
+    def __init__(self):
         self.active: Set[str] = set()
         self.enabled = True
-        self.last_sent: List[str] = []
+        self.last_sent = []
         self.last_mouse = (0, 0)
         self.look_sensitivity = 8.0
         self.look_deadzone = 0.28
         self.max_look_px = 22
-        self._last_pulse: dict = {}
+        self._last_pulse = {}
         self._pulse_cooldown = 1.5
         self._last_look_t = 0.0
         self._look_interval = 0.03
 
-    def focus_roblox(self) -> bool:
+    def focus_roblox(self):
         if gw is None:
             return False
         try:
@@ -107,59 +108,67 @@ class MotorController:
         except Exception:
             return False
 
-    def _keydown(self, key: str) -> bool:
+    def _keydown(self, key):
         vk = VK.get(key)
-        if vk is not None and _si_key(vk, up=False):
+        if vk is not None and _si_key(vk, False):
             return True
         if pydirectinput:
             try:
-                pydirectinput.keyDown(key)
-                return True
+                pydirectinput.keyDown(key); return True
             except Exception:
                 return False
         return False
 
-    def _keyup(self, key: str) -> bool:
+    def _keyup(self, key):
         vk = VK.get(key)
-        if vk is not None and _si_key(vk, up=True):
+        if vk is not None and _si_key(vk, True):
             return True
         if pydirectinput:
             try:
-                pydirectinput.keyUp(key)
-                return True
+                pydirectinput.keyUp(key); return True
             except Exception:
                 return False
         return False
 
-    def _press(self, key: str) -> bool:
+    def _press(self, key):
         vk = VK.get(key)
         if vk is not None:
-            _si_key(vk, False)
-            time.sleep(0.03)
-            _si_key(vk, True)
-            return True
+            _si_key(vk, False); time.sleep(0.03); _si_key(vk, True); return True
         if pydirectinput:
             try:
-                pydirectinput.press(key)
-                return True
+                pydirectinput.press(key); return True
             except Exception:
                 return False
         return False
 
-    def _move(self, dx: int, dy: int) -> bool:
+    def _move(self, dx, dy):
         if dx == 0 and dy == 0:
             return False
         if _si_move(dx, dy):
             return True
         if pydirectinput:
             try:
-                pydirectinput.moveRel(dx, dy, relative=True)
-                return True
+                pydirectinput.moveRel(dx, dy, relative=True); return True
             except Exception:
                 return False
         return False
 
-    def apply(self, actions: List[str], motor_scores: Optional[list] = None) -> List[str]:
+    def _left_click(self):
+        if _SendInput is not None and INPUT is not None:
+            for flags in (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP):
+                inp = INPUT()
+                inp.type = INPUT_MOUSE
+                inp.union.mi = MOUSEINPUT(0, 0, 0, flags, 0, None)
+                _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+            return True
+        if pydirectinput:
+            try:
+                pydirectinput.click(); return True
+            except Exception:
+                return False
+        return False
+
+    def apply(self, actions, motor_scores=None):
         if not self.enabled:
             return []
         now = time.time()
@@ -171,7 +180,7 @@ class MotorController:
                         desired.discard(b); break
                     if x == b:
                         desired.discard(a); break
-        sent: List[str] = []
+        sent = []
         for name in list(self.active):
             if name not in desired and name in KEY_MAP and KEY_MAP[name]:
                 self._keyup(KEY_MAP[name])
@@ -181,7 +190,7 @@ class MotorController:
             if not key:
                 continue
             if name in PULSE_ACTIONS:
-                if now - self._last_pulse.get(name, 0.0) < self._pulse_cooldown:
+                if now - self._last_pulse.get(name, 0) < self._pulse_cooldown:
                     continue
                 if self._press(key):
                     self._last_pulse[name] = now
@@ -205,10 +214,15 @@ class MotorController:
                         sent.append(f"look({dx},{dy})")
                         self.last_mouse = (dx, dy)
                         self._last_look_t = now
+        if "secondary" in desired:
+            if now - self._last_pulse.get("secondary", 0) >= 0.35:
+                if self._left_click():
+                    sent.append("attack_click")
+                    self._last_pulse["secondary"] = now
         self.last_sent = sent
         return sent
 
-    def type_text(self, text: str) -> None:
+    def type_text(self, text):
         if not self.enabled:
             return
         try:
@@ -221,7 +235,7 @@ class MotorController:
         except Exception:
             pass
 
-    def release_all(self) -> None:
+    def release_all(self):
         for name in list(self.active):
             key = KEY_MAP.get(name)
             if key:
@@ -229,9 +243,9 @@ class MotorController:
         self.active.clear()
         self.last_mouse = (0, 0)
 
-    def emergency_stop(self) -> None:
+    def emergency_stop(self):
         self.enabled = False
         self.release_all()
 
-    def resume(self) -> None:
+    def resume(self):
         self.enabled = True
