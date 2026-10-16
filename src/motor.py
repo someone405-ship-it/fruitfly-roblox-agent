@@ -1,7 +1,9 @@
-"""Motor decoder — clamped look, WASD mutex, safe holds."""
+"""Motor — keys + mouse via SendInput (pydirectinput fallback)."""
 from __future__ import annotations
 from typing import List, Optional, Set
 import time
+import ctypes
+from ctypes import wintypes
 
 try:
     import pydirectinput
@@ -15,6 +17,38 @@ try:
 except ImportError:
     gw = None
 
+INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
+MOUSEEVENTF_MOVE = 0x0001
+KEYEVENTF_KEYUP = 0x0002
+
+if hasattr(ctypes, "windll"):
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                     ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                     ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                     ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                     ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+    class INPUT_UNION(ctypes.Union):
+        _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("union", INPUT_UNION)]
+    _SendInput = ctypes.windll.user32.SendInput
+    _MapVirtualKey = ctypes.windll.user32.MapVirtualKeyW
+else:
+    INPUT = None
+    _SendInput = None
+
+VK = {
+    "w": 0x57, "s": 0x53, "a": 0x41, "d": 0x44,
+    "space": 0x20, "shift": 0x10, "e": 0x45, "r": 0x52,
+    "ctrl": 0x11, "b": 0x42, "f": 0x46, "/": 0xBF,
+    "up": 0x26, "down": 0x28, "enter": 0x0D,
+}
 KEY_MAP = {
     "forward": "w", "back": "s", "left": "a", "right": "d",
     "jump": "space", "sprint": "shift", "interact": "e",
@@ -24,32 +58,48 @@ KEY_MAP = {
 }
 PULSE_ACTIONS = {"chat_toggle", "interact", "reset", "emote", "camera", "ui_select", "secondary"}
 
+def _si_move(dx: int, dy: int) -> bool:
+    if _SendInput is None or INPUT is None:
+        return False
+    inp = INPUT()
+    inp.type = INPUT_MOUSE
+    inp.union.mi = MOUSEINPUT(dx, dy, 0, MOUSEEVENTF_MOVE, 0, None)
+    return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+
+def _si_key(vk: int, up: bool = False) -> bool:
+    if _SendInput is None or INPUT is None:
+        return False
+    scan = _MapVirtualKey(vk, 0)
+    flags = KEYEVENTF_KEYUP if up else 0
+    inp = INPUT()
+    inp.type = INPUT_KEYBOARD
+    inp.union.ki = KEYBDINPUT(vk, scan, flags, 0, None)
+    return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
 class MotorController:
     def __init__(self) -> None:
         self.active: Set[str] = set()
         self.enabled = True
         self.last_sent: List[str] = []
-        self.look_sensitivity = 4.0
-        self.look_deadzone = 0.45
-        self.max_look_px = 12
+        self.last_mouse = (0, 0)
+        self.look_sensitivity = 8.0
+        self.look_deadzone = 0.28
+        self.max_look_px = 22
         self._last_pulse: dict = {}
-        self._pulse_cooldown = 1.2
+        self._pulse_cooldown = 1.5
         self._last_look_t = 0.0
-        self._look_interval = 0.05
+        self._look_interval = 0.03
 
     def focus_roblox(self) -> bool:
         if gw is None:
             return False
         try:
             wins = [w for w in gw.getAllWindows()
-                    if w.title and "roblox" in w.title.lower()
-                    and "fruitfly" not in w.title.lower()]
+                    if w.title and "roblox" in w.title.lower() and "fruitfly" not in w.title.lower()
+                    and w.width >= 200 and w.height >= 150]
             if not wins:
                 return False
             w = max(wins, key=lambda x: max(0, x.width) * max(0, x.height))
-            if w.width < 80:
-                return False
             if w.isMinimized:
                 w.restore()
             w.activate()
@@ -57,8 +107,60 @@ class MotorController:
         except Exception:
             return False
 
+    def _keydown(self, key: str) -> bool:
+        vk = VK.get(key)
+        if vk is not None and _si_key(vk, up=False):
+            return True
+        if pydirectinput:
+            try:
+                pydirectinput.keyDown(key)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _keyup(self, key: str) -> bool:
+        vk = VK.get(key)
+        if vk is not None and _si_key(vk, up=True):
+            return True
+        if pydirectinput:
+            try:
+                pydirectinput.keyUp(key)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _press(self, key: str) -> bool:
+        vk = VK.get(key)
+        if vk is not None:
+            _si_key(vk, False)
+            time.sleep(0.03)
+            _si_key(vk, True)
+            return True
+        if pydirectinput:
+            try:
+                pydirectinput.press(key)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _move(self, dx: int, dy: int) -> bool:
+        if dx == 0 and dy == 0:
+            return False
+        if _si_move(dx, dy):
+            return True
+        if pydirectinput:
+            try:
+                pydirectinput.moveRel(dx, dy, relative=True)
+                return True
+            except Exception:
+                return False
+        return False
+
     def apply(self, actions: List[str], motor_scores: Optional[list] = None) -> List[str]:
-        if not self.enabled or pydirectinput is None:
+        if not self.enabled:
             return []
         now = time.time()
         desired = set(actions)
@@ -66,94 +168,66 @@ class MotorController:
             if a in desired and b in desired:
                 for x in actions:
                     if x == a:
-                        desired.discard(b)
-                        break
+                        desired.discard(b); break
                     if x == b:
-                        desired.discard(a)
-                        break
+                        desired.discard(a); break
         sent: List[str] = []
         for name in list(self.active):
             if name not in desired and name in KEY_MAP and KEY_MAP[name]:
-                try:
-                    pydirectinput.keyUp(KEY_MAP[name])
-                except Exception:
-                    pass
+                self._keyup(KEY_MAP[name])
                 self.active.discard(name)
         for name in desired:
             key = KEY_MAP.get(name)
             if not key:
                 continue
             if name in PULSE_ACTIONS:
-                last = self._last_pulse.get(name, 0.0)
-                if now - last < self._pulse_cooldown:
+                if now - self._last_pulse.get(name, 0.0) < self._pulse_cooldown:
                     continue
-                try:
-                    pydirectinput.press(key)
+                if self._press(key):
                     self._last_pulse[name] = now
                     sent.append(name)
-                except Exception:
-                    pass
                 continue
             if name not in self.active:
-                try:
-                    pydirectinput.keyDown(key)
+                if self._keydown(key):
                     self.active.add(name)
                     sent.append(name)
-                except Exception:
-                    pass
         if motor_scores is not None and len(motor_scores) >= 10:
             if now - self._last_look_t >= self._look_interval:
                 ll, lr = float(motor_scores[6]), float(motor_scores[7])
                 lu, ld = float(motor_scores[8]), float(motor_scores[9])
                 raw_x, raw_y = (-ll + lr), (-lu + ld)
-                if abs(raw_x) < self.look_deadzone:
-                    raw_x = 0.0
-                if abs(raw_y) < self.look_deadzone:
-                    raw_y = 0.0
+                if abs(raw_x) < self.look_deadzone: raw_x = 0.0
+                if abs(raw_y) < self.look_deadzone: raw_y = 0.0
                 dx = int(max(-self.max_look_px, min(self.max_look_px, raw_x * self.look_sensitivity)))
-                dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.8)))
-                if dx != 0 or dy != 0:
-                    try:
-                        pydirectinput.moveRel(dx, dy, relative=True)
+                dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.85)))
+                if dx or dy:
+                    if self._move(dx, dy):
                         sent.append(f"look({dx},{dy})")
+                        self.last_mouse = (dx, dy)
                         self._last_look_t = now
-                    except Exception:
-                        pass
-        if "secondary" in desired:
-            last = self._last_pulse.get("secondary", 0.0)
-            if now - last >= self._pulse_cooldown:
-                try:
-                    pydirectinput.click(button="right")
-                    self._last_pulse["secondary"] = now
-                    sent.append("secondary")
-                except Exception:
-                    pass
         self.last_sent = sent
         return sent
 
     def type_text(self, text: str) -> None:
-        if not self.enabled or pydirectinput is None:
+        if not self.enabled:
             return
         try:
-            pydirectinput.press("/")
-            time.sleep(0.15)
-            pydirectinput.typewrite(text, interval=0.04)
-            time.sleep(0.05)
-            pydirectinput.press("enter")
+            self._press("/")
+            time.sleep(0.2)
+            if pydirectinput:
+                pydirectinput.typewrite(text, interval=0.05)
+            time.sleep(0.08)
+            self._press("enter")
         except Exception:
             pass
 
     def release_all(self) -> None:
-        if pydirectinput is None:
-            return
         for name in list(self.active):
             key = KEY_MAP.get(name)
             if key:
-                try:
-                    pydirectinput.keyUp(key)
-                except Exception:
-                    pass
+                self._keyup(key)
         self.active.clear()
+        self.last_mouse = (0, 0)
 
     def emergency_stop(self) -> None:
         self.enabled = False
