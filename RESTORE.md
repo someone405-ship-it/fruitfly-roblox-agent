@@ -1,21 +1,26 @@
-# Restore + death rules
+# Full audit status (2026-10-16)
 
-## Death unreward rules
-- Stat **>= 1** → lose that stat (floor 0)
-- Stat **== 0** → **HURT** (no further loss; extra pain)
+## Tests passed (pure Python)
+- config 139255 / 26 motors / STAT_MAX
+- stats: 0 → HURT, 1+ → lose, max cap
+- runtime bans + reflex publish/look scale
+- potential + reflex portal force
+- mistake/win/skill/eye memory save-load
+- loot on_kill
+- circuit step
+- behavior modulate + death notes
 
-## Free will decide
-Brain chooses actions; autopilot only nudges when motor already leans that way.
+## Not run here (needs Windows + RAM/GPU)
+- FruitFlyBrain full 139k init (OOM on tiny CI; fine on laptop GPU/CPU with 16GB+)
+- PyQt GUI / SendInput / Roblox window
 
-## If main.py / behavior.py empty
-
-Copy fixed builds (from this project artifacts or last good local):
-
+## If main/behavior empty after pull
 ```powershell
 Copy-Item artifacts\main.py.fixed src\main.py -Force
 Copy-Item artifacts\behavior.py.fixed src\behavior.py -Force
+Copy-Item artifacts\stats.py.fixed src\stats.py -Force
+Copy-Item artifacts\motor.py.fixed src\motor.py -Force
+python run_app.py
 ```
 
-Then `python run_app.py`
-
-Tests run: zero-stat death → HURT only; mixed stats → lose where possible.
+Or: `python -m src._rebuild_core` if artifacts are next to the repo.
