@@ -1,30 +1,34 @@
-"""FruitFlyBrain — dual-timescale LIF reservoir (production)."""
+"""LIF reservoir brain — power-iteration spectral radius."""
 from __future__ import annotations
-import numpy as np
 from pathlib import Path
 from typing import Tuple
+import numpy as np
 from .config import (
-    N_SENSORY, N_HIDDEN, N_MOTOR, DT_MS, TAU_MEM, TAU_SLOW,
-    V_THRESH, V_RESET, NOISE_SCALE, SPARSITY, SPECTRAL_RADIUS,
-    MOTOR_NAMES, WEIGHTS_PATH,
+    N_SENSORY, N_HIDDEN, N_MOTOR, MOTOR_NAMES, DT_MS, TAU_MEM, TAU_SLOW,
+    V_THRESH, V_RESET, NOISE_SCALE, SPARSITY, SPECTRAL_RADIUS, WEIGHTS_PATH,
 )
 
-def _spectral_radius_estimate(W: np.ndarray, iters: int = 20) -> float:
+
+def _spectral_radius_estimate(W: np.ndarray, iters: int = 40) -> float:
+    """Power iteration — avoids full eigvalsh hang on large matrices."""
     n = W.shape[0]
-    v = np.random.default_rng(0).standard_normal(n).astype(np.float32)
+    if n == 0:
+        return 0.0
+    rng = np.random.default_rng(0)
+    v = rng.standard_normal(n).astype(np.float32)
     v /= (np.linalg.norm(v) + 1e-9)
-    nrm = 1.0
     for _ in range(iters):
-        v = W @ v
-        nrm = float(np.linalg.norm(v)) + 1e-9
-        v /= nrm
-    return float(nrm)
+        w = W @ v
+        nrm = float(np.linalg.norm(w)) + 1e-9
+        v = w / nrm
+    return float(np.linalg.norm(W @ v))
+
 
 class FruitFlyBrain:
-    def __init__(self, seed: int = 42) -> None:
-        rng = np.random.default_rng(seed)
-        self.rng = rng
-        self.W_in = rng.normal(0.0, 0.35, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
+    def __init__(self, seed: int = 0) -> None:
+        self.rng = np.random.default_rng(seed)
+        rng = self.rng
+        self.W_in = rng.normal(0.0, 0.4, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
         W = rng.normal(0.0, 1.0, size=(N_HIDDEN, N_HIDDEN)).astype(np.float32)
         W *= (rng.random(W.shape) < SPARSITY).astype(np.float32)
         signs = np.where(rng.random(N_HIDDEN) < 0.5, 1.0, -1.0).astype(np.float32)
@@ -83,12 +87,12 @@ class FruitFlyBrain:
             "mean_rate_slow": float(self.rate_slow.mean()),
             "mean_gain": float(self.gain.mean()),
             "total_spikes": self.total_spikes, "steps": self.steps,
-            "motor": {name: float(motor[i]) for i, name in enumerate(MOTOR_NAMES)},
+            "motor": {MOTOR_NAMES[i]: float(motor[i]) for i in range(min(N_MOTOR, motor.size))},
             "motor_vec": motor.copy(),
         }
         return motor, info
 
-    def decide(self, motor: np.ndarray, threshold: float = 0.22) -> list:
+    def decide(self, motor: np.ndarray, threshold: float = 0.18) -> list:
         active = [MOTOR_NAMES[i] for i in range(min(len(MOTOR_NAMES), motor.size)) if motor[i] > threshold]
         pairs = [("forward", "back"), ("left", "right"), ("look_left", "look_right"), ("look_up", "look_down")]
         name_to_i = {n: i for i, n in enumerate(MOTOR_NAMES)}
