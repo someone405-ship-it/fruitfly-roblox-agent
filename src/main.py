@@ -1,4 +1,4 @@
-"""FruitFly Roblox Agent — combat mode stats."""
+"""FruitFly Roblox Agent — Deadpool kit + pain/anger stats."""
 from __future__ import annotations
 import sys
 import time
@@ -58,7 +58,7 @@ class AgentWorker(QThread):
 
     def run(self) -> None:
         self._running = True
-        self.log_ready.emit("brain online")
+        self.log_ready.emit("brain online — deadpool kit")
         if self.trainer.samples:
             self.log_ready.emit(f"pre-train samples={self.trainer.samples}")
         self.worker_ready.emit()
@@ -87,10 +87,25 @@ class AgentWorker(QThread):
                 info.update(cread)
                 actions = self.brain.decide(motor, threshold=0.28)
                 actions = [a for a in actions if not a.startswith("look_")]
-                if "explore" in notes and "forward" not in actions and float(motor[0]) > 0.15:
+                if any(t in notes for t in ("explore", "rail", "seek_portal")) and "forward" not in actions and float(motor[0]) > 0.12:
                     actions.insert(0, "forward")
                 if "attack" in notes and "secondary" not in actions:
                     actions.append("secondary")
+                if "q_dash" in notes and "camera" not in actions:
+                    actions.append("camera")
+                if "e_slash" in notes and "interact" not in actions:
+                    actions.append("interact")
+                if "r_combo" in notes and "reset" not in actions:
+                    actions.append("reset")
+                if "e_slash" not in notes:
+                    actions = [a for a in actions if a != "interact"]
+                if "r_combo" not in notes:
+                    actions = [a for a in actions if a != "reset"]
+                if "q_dash" not in notes:
+                    actions = [a for a in actions if a != "camera"]
+                line = self.behavior.take_line()
+                if line:
+                    self.log_ready.emit(f"fly: {line}")
                 sent = self.motor.apply(actions, motor.tolist())
                 chat = self.behavior.take_chat()
                 if chat:
@@ -105,7 +120,7 @@ class AgentWorker(QThread):
                     tag = ",".join(notes) if notes else ""
                     self.log_ready.emit(f"-> {', '.join(sent)} | {tag} | spk={info['n_spikes']}")
                 self.status_ready.emit(
-                    f"{binfo.get('combat_mode','?')} fear={binfo.get('fear',0):.2f} water={binfo.get('water_score',0):.2f}"
+                    f"{binfo.get('combat_mode','?')} pain={binfo.get('pain',0):.2f} anger={binfo.get('anger',0):.2f}"
                 )
             except Exception as e:
                 self.log_ready.emit(f"error: {e}")
@@ -285,7 +300,7 @@ class MainWindow(QMainWindow):
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("Join Superhero Arena first, then START. Water=death. Fight cycle on.")
+        self.setup_lbl.setText("Deadpool: Q dash, E slash, R combo only in fights. Rail → portal. Pain/anger/dodge on.")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
@@ -320,7 +335,7 @@ class MainWindow(QMainWindow):
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — STOP/F9. Water=back off. Danger=flee then fight.")
+        self.watch_lbl.setText("WATCH ONLY — STOP/F9. E only as Air Slash in fight.")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -335,7 +350,7 @@ class MainWindow(QMainWindow):
     def _on_scare(self) -> None:
         try:
             self.worker.behavior.scare()
-            self.log_view.append("SCARE — flee then fight")
+            self.log_view.append("SCARE — pain up, flee then angry fight")
         except Exception as e:
             self.log_view.append(f"scare failed: {e}")
 
@@ -374,10 +389,12 @@ class MainWindow(QMainWindow):
         self.stats_lbl.setText(
             f"t={info.get('t_ms',0):.0f}ms steps={info.get('steps',0)}\n"
             f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
-            f"fear={info.get('fear',0):.2f} arousal={info.get('arousal',0):.2f}\n"
+            f"fear={info.get('fear',0):.2f} pain={info.get('pain',0):.2f} anger={info.get('anger',0):.2f}\n"
             f"loom={info.get('loom_score',0):.2f} gf={info.get('gf_rate',0):.2f}\n"
             f"food={info.get('food_score',0):.2f} water={info.get('water_score',0):.2f}\n"
-            f"mode={info.get('combat_mode','?')} lock={'ON' if input_lock.is_locked() else 'off'}"
+            f"mode={info.get('combat_mode','?')} kit={info.get('character','deadpool')}\n"
+            f"rail={info.get('rail_score',0):.2f} portal={info.get('portal_score',0):.2f}\n"
+            f"lock={'ON' if input_lock.is_locked() else 'off'}"
         )
 
     def closeEvent(self, e) -> None:
