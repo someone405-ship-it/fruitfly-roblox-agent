@@ -1,4 +1,4 @@
-"""Autonomy + kill loot gamble (mostly food)."""
+"""Autonomy + kill loot + death hurt + power unlock."""
 from __future__ import annotations
 from typing import Dict, Any, List
 import time
@@ -26,14 +26,6 @@ CHAR_KITS: Dict[str, Dict[str, Any]] = {
     },
 }
 CHAR_ORDER = ("deadpool", "batman", "war_machine")
-LINES = {
-    "explore": ("walking.", "new angle."), "wander": ("drifting.",),
-    "parkour": ("up.",), "fight": ("pressure.",), "hunt": ("on them.",),
-    "flee": ("space.",), "portal": ("through.",), "rail": ("path.",),
-    "browse": ("looking for a game.",), "rejoin": ("back in.",),
-    "social": ("yo.",), "forage": ("shiny.",), "rest": ("breathe.",),
-    "patrol": ("sweep.",), "camera_look": ("check corners.",),
-}
 
 
 class BehaviorLayer:
@@ -53,7 +45,6 @@ class BehaviorLayer:
         self._last_chat_at = 0.0
         self.mode = "explore"
         self._flee_until = 0.0
-        self._fight_until = 0.0
         self.flee_seconds = 0.5
         self.fight_seconds = 5.0
         self.cd_q = self.cd_e = self.cd_r = 0.0
@@ -66,16 +57,15 @@ class BehaviorLayer:
         self._last_say = 0.0
         self._hist_motion: List[float] = []
         self._hist_cx: List[float] = []
-        self._pred_side = 0.0
         self._last_dodge = 0.0
         self._hits = 0
+        self._deaths = 0
         self.lock_in = False
         self.kit = CHAR_KITS[self.character]
-        self.autonomy = True
-        self._line_i = 0
         self.goal = "explore"
-        self.features_active = 60
+        self.features_active = 68
         self._last_kill_at = 0.0
+        self._last_death_at = 0.0
         self._pending_kill_notes: List[str] = []
 
     def _apply_char(self, name: str) -> None:
@@ -189,11 +179,6 @@ class BehaviorLayer:
         self.anger = min(1.0, self.anger + 0.15)
         return notes
 
-    def _line_for(self, goal: str) -> None:
-        opts = LINES.get(goal, ("…",))
-        self._line_i = (self._line_i + 1) % len(opts)
-        self._say(opts[self._line_i])
-
     def modulate(self, motor, meta, circuit_bias=None):
         m = motor.astype(np.float32).copy()
         if m.size < N_MOTOR:
@@ -217,6 +202,7 @@ class BehaviorLayer:
         portal = float(meta.get("portal_score", 0.0))
         portal_cx = float(meta.get("portal_cx", 0.5))
         kill_event = bool(meta.get("kill_event", False))
+        death_event = bool(meta.get("death_event", False))
 
         if kill_event and (now - self._last_kill_at) > 1.2:
             self._last_kill_at = now
@@ -238,6 +224,23 @@ class BehaviorLayer:
                 self._last_chat_at = now
             self.instinct.reward_goal("fight", True)
             self.instinct.reward_goal("hunt", True)
+
+        if death_event and (now - self._last_death_at) > 2.0:
+            self._last_death_at = now
+            self._deaths += 1
+            self.pain = min(1.0, self.pain + 0.55)
+            self.fear = min(1.0, self.fear + 0.4)
+            self.weakness = min(1.0, self.weakness + 0.35)
+            self.anger = min(1.0, self.anger + 0.2)
+            self._hits += 1
+            lost = min(2, self.loot.food)
+            if lost:
+                self.loot.food -= lost
+            self._pending_kill_notes = list(self._pending_kill_notes) + ["death", "hurt", f"food_lost:{lost}"]
+            self._say(f"died — hurt. food lost={lost}. pain up.")
+            self.instinct.confidence = max(0.1, self.instinct.confidence - 0.08)
+            self.mode = "flee"
+            self._flee_until = now + 1.2
 
         hit = max(0.0, loom - 0.48) + max(0.0, threat - 0.38)
         if hit > 0:
@@ -278,7 +281,6 @@ class BehaviorLayer:
             self._steer(m, portal_cx, 1.0)
             self._zero_kit(m)
             notes += ["seek_portal"]
-            self.instinct.reward_goal("portal", True)
         elif goal == "rail":
             self.mode = "rail"
             m[self.idx["forward"]] = 0.9
@@ -286,7 +288,7 @@ class BehaviorLayer:
             self._steer(m, rail_cx, 0.9)
             self._zero_kit(m)
             notes += ["rail"]
-        elif goal == "flee" or water > 0.55:
+        elif goal == "flee" or water > 0.55 or (now < self._flee_until):
             self.mode = "flee"
             m[self.idx["forward"]] = 0.0
             m[self.idx["back"]] = 0.7
@@ -311,7 +313,6 @@ class BehaviorLayer:
             notes += ["fight", "attack", "lock_in"]
             notes += self._kit(m, now, True)
             notes += self._predict_and_dodge(m, meta, now)
-            self.instinct.reward_goal("fight", True)
         elif goal in ("browse", "rejoin") or lobby > 0.55:
             self.mode = "browse"
             allow_ui = True
@@ -320,8 +321,6 @@ class BehaviorLayer:
             self._zero_kit(m)
             if phase in (0, 1):
                 m[self.idx["ui_down"]] = 0.9; notes.append("ui_scroll")
-            elif phase == 2:
-                m[self.idx["ui_up"]] = 0.5
             elif phase == 3:
                 m[self.idx["ui_select"]] = 0.9; notes.append("ui_select")
             notes += ["browse", "join_intent"]
@@ -330,36 +329,6 @@ class BehaviorLayer:
             m[self.idx["sprint"]] = 0.7
             m[self.idx["jump"]] = 0.75 if int(now * 3) % 3 == 0 else 0.1
             notes += ["parkour"]
-            self._zero_kit(m)
-        elif goal == "camera_look":
-            lx, ly = self.instinct.look_wander()
-            if lx > 0: m[self.idx["look_right"]] = abs(lx)
-            else: m[self.idx["look_left"]] = abs(lx)
-            m[self.idx["forward"]] = 0.2
-            notes += ["camera_look"]
-            self._zero_kit(m)
-        elif goal == "social":
-            m[self.idx["forward"]] = 0.25
-            if now - self._last_chat_at > 8.0:
-                self.pending_chat = str(np.random.choice(["yo", "hi", "ggs"]))
-                self._last_chat_at = now
-            notes += ["social"]
-            self._zero_kit(m)
-        elif goal == "forage" or food > 0.55:
-            m[self.idx["forward"]] = 0.7
-            notes += ["forage", "food_seen"]
-            self._zero_kit(m)
-        elif goal == "rest":
-            m[self.idx["forward"]] = 0.05
-            notes += ["rest"]
-            self._zero_kit(m)
-            self.instinct.fatigue = max(0.0, self.instinct.fatigue - 0.05)
-        elif goal == "patrol":
-            m[self.idx["forward"]] = 0.7
-            t = math.sin(now * 0.4)
-            if t > 0: m[self.idx["right"]] = 0.45
-            else: m[self.idx["left"]] = 0.45
-            notes += ["patrol"]
             self._zero_kit(m)
         else:
             self.mode = "explore"
@@ -384,14 +353,21 @@ class BehaviorLayer:
             notes.append("eat_food")
             self._say(f"ate food. bag={self.loot.food}")
 
+        kills = int(self.loot.kills)
+        power_mult = 1.0
+        power_name = "dormant"
+        for need, mult, name in ((0, 1.0, "dormant"), (3, 1.08, "awake"), (8, 1.16, "charged"),
+                                  (15, 1.28, "ascendant"), (25, 1.42, "unlocked")):
+            if kills >= need:
+                power_mult, power_name = mult, name
+        if power_mult > 1.0:
+            for ch in ("forward", "sprint", "secondary", "look_left", "look_right"):
+                m[self.idx[ch]] = float(np.clip(m[self.idx[ch]] * power_mult, -1.5, 1.5))
+            notes.append(f"power:{power_name}")
+
         self._danger_now = max(threat, loom * 0.9) > 0.4
         if self._danger_now:
             notes.append("danger")
-            if not self._danger_seen:
-                self._say("danger")
-                self._danger_seen = True
-        else:
-            self._danger_seen = False
 
         if not allow_ui:
             self._zero_junk(m)
@@ -409,7 +385,8 @@ class BehaviorLayer:
             "combat_mode": self.mode, "character": self.character,
             "char_label": self.kit["label"], "rot": self._rot,
             "hits": self._hits, "lock_in": self.lock_in, "goal": self.goal,
-            "features": self.features_active,
+            "features": self.features_active, "power": power_name, "power_mult": power_mult,
+            "deaths": self._deaths,
             **{f"drv_{k}": v for k, v in snap.items() if isinstance(v, (int, float))},
             **{f"loot_{k}": v for k, v in self.loot.snapshot().items() if isinstance(v, (int, float, str))},
         }
