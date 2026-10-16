@@ -1,4 +1,4 @@
-"""Multi-hero kit: Deadpool / Batman / War Machine + rail/portal + pain/anger + dodge."""
+"""Multi-hero kit + danger call + rail/portal + pain/anger + dodge."""
 from __future__ import annotations
 from typing import Optional, List, Dict, Any
 import time
@@ -44,6 +44,8 @@ class BehaviorLayer:
         self.idx = {n: i for i, n in enumerate(MOTOR_NAMES)}
         self.manual_scare = False
         self._food_seen = False
+        self._danger_seen = False
+        self._danger_now = False
         self.mode = "explore"
         self._flee_until = 0.0
         self._fight_until = 0.0
@@ -273,6 +275,8 @@ class BehaviorLayer:
                 self._say("hit me once. I run, then I fight angry.")
         else:
             self.fear = max(0.0, self.fear - 0.08)
+        danger_level = max(threat, loom * 0.9)
+        self._danger_now = danger_level > 0.38
         if self.mode == "flee" and now >= self._flee_until:
             self.mode = "fight"
             self._fight_until = now + self.fight_seconds * (1.0 + 0.4 * self.anger)
@@ -280,6 +284,15 @@ class BehaviorLayer:
             self._say(f"back in as {self.kit['label']}. Q, E, R.")
         if self.mode == "fight" and now >= self._fight_until:
             self.mode = "rail" if rail > 0.2 else "explore"
+        if self._danger_now:
+            notes.append("danger")
+            if not self._danger_seen:
+                self._say("danger")
+                self.pending_chat = "danger"
+                notes.append("chat_danger")
+                self._danger_seen = True
+        else:
+            self._danger_seen = False
         if threat > 0.25 or loom > 0.35:
             notes += self._predict_and_dodge(m, meta, now)
         fighting = self.mode == "fight"
