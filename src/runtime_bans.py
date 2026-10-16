@@ -1,6 +1,6 @@
-"""Process-wide action bans from mistake memory (read by motor every tick)."""
+"""Process-wide action bans + prefer/force + look scale bridge."""
 from __future__ import annotations
-from typing import Set, Optional
+from typing import Set, Optional, Tuple
 
 _BANNED: Set[str] = set()
 _PREFER: Set[str] = set()
@@ -17,7 +17,6 @@ def get_bans() -> Set[str]:
 
 
 def get_prefer() -> Set[str]:
-    """Prefer + reflex force actions (so motor.apply picks them without extra imports)."""
     out = set(_PREFER)
     try:
         from . import runtime_reflex
@@ -25,3 +24,13 @@ def get_prefer() -> Set[str]:
     except Exception:
         pass
     return out
+
+
+def get_look_scale() -> Tuple[float, int]:
+    """Returns (sensitivity, max_px) from potential/reflex if published."""
+    try:
+        from . import runtime_reflex
+        return runtime_reflex.get_look()
+    except Exception:
+        from .config import LOOK_SENSITIVITY, LOOK_MAX_PX
+        return float(LOOK_SENSITIVITY), int(LOOK_MAX_PX)
