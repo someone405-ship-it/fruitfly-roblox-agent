@@ -1,4 +1,8 @@
-"""Selective watch-only lock: block input only while Roblox is focused. F9 always passes."""
+"""Selective watch-only lock: block user keys/clicks only while Roblox is focused.
+
+F9 always passes. Mouse *movement* is never suppressed so agent camera (SendInput)
+still works; user clicks/keys into Roblox are blocked.
+"""
 from __future__ import annotations
 import threading
 
@@ -7,8 +11,10 @@ _locked = False
 _kb = None
 _mouse = None
 
+
 def is_locked() -> bool:
     return _locked
+
 
 def _foreground_is_roblox() -> bool:
     try:
@@ -21,9 +27,10 @@ def _foreground_is_roblox() -> bool:
         buf = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buf, length + 1)
         title = (buf.value or "").lower()
-        return "roblox" in title
+        return "roblox" in title and "fruitfly" not in title
     except Exception:
         return False
+
 
 def lock() -> bool:
     global _locked, _kb, _mouse
@@ -60,8 +67,7 @@ def lock() -> bool:
                 return True
 
             def on_move(x, y):
-                if _foreground_is_roblox():
-                    return False
+                # NEVER suppress movement — agent look uses relative mouse
                 return True
 
             def on_scroll(x, y, dx, dy):
@@ -70,7 +76,9 @@ def lock() -> bool:
                 return True
 
             _kb = keyboard.Listener(on_press=on_press, on_release=on_release, suppress=True)
-            _mouse = mouse.Listener(on_click=on_click, on_move=on_move, on_scroll=on_scroll, suppress=True)
+            _mouse = mouse.Listener(
+                on_click=on_click, on_move=on_move, on_scroll=on_scroll, suppress=True
+            )
             _kb.start()
             _mouse.start()
             _locked = True
@@ -78,6 +86,7 @@ def lock() -> bool:
         except Exception:
             _locked = False
             return False
+
 
 def unlock() -> None:
     global _locked, _kb, _mouse
