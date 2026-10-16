@@ -45,9 +45,9 @@ MOTOR_LABELS = {
     "forward": "W forward", "back": "S back", "left": "A left", "right": "D right",
     "jump": "Space jump", "sprint": "Shift sprint", "look_left": "Look L",
     "look_right": "Look R", "look_up": "Look Up", "look_down": "Look Dn",
-    "interact": "E Air Slash", "chat_toggle": "Chat /", "ui_up": "UI up",
-    "ui_down": "UI down", "ui_select": "UI Enter", "reset": "R Combo",
-    "crouch": "Ctrl crouch", "emote": "Emote", "camera": "Q Dash", "secondary": "RMB",
+    "interact": "E ability", "chat_toggle": "Chat /", "ui_up": "UI up",
+    "ui_down": "UI down", "ui_select": "UI Enter", "reset": "R ultimate",
+    "crouch": "Ctrl crouch", "emote": "Emote", "camera": "Q ability", "secondary": "RMB",
 }
 
 WINDOW_W = 1440
