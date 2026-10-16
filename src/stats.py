@@ -24,7 +24,6 @@ STAT_LABELS = {
     "grit": "GRIT",
 }
 
-# Positive rewards
 EVENT_REWARDS = {
     "kill": {"luck": 1, "power": 2, "rage": 3, "items": 1, "grit": 1},
     "portal": {"focus": 2, "luck": 1, "grit": 1},
@@ -40,7 +39,6 @@ EVENT_REWARDS = {
     "loot_heal": {"vitality": 5},
     "loot_shield": {"shield": 5, "items": 1},
     "loot_jackpot": {"food": 3, "luck": 5, "power": 5, "speed": 5, "rage": 5, "items": 2},
-    # death: heavy unreward (also handled by on_death for messages)
     "death": {
         "vitality": -12,
         "food": -4,
@@ -172,32 +170,39 @@ class FlyStats:
         return applied, msg
 
     def on_death(self) -> Dict[str, Any]:
-        """Roblox death — strip rewards. Debounced so one death != spam."""
+        """Roblox death — strip rewards. Debounced."""
         now = time.time()
         if now - self._last_death_at < 2.5:
             return {"event": "death", "applied": {}, "messages": [], "line": "", "skipped": True}
         self._last_death_at = now
         self.deaths += 1
 
-        result = self.reward_event("death")
+        table = EVENT_REWARDS.get("death", {})
+        applied: Dict[str, float] = {}
+        for k, amt in table.items():
+            delta, _msg = self.grant(k, float(amt))
+            if abs(delta) > 1e-9:
+                applied[k] = delta
         line_idx = self.deaths % len(DEATH_LINES)
         death_msg = DEATH_LINES[line_idx]
+        if applied:
+            parts = [f"{STAT_LABELS.get(k, k)}{delta:+.0f}" for k, delta in applied.items()]
+            death_msg = death_msg + " | stats " + " ".join(parts)
         self.last_messages.append(death_msg)
-        if result.get("line"):
-            death_msg = death_msg + " | " + result["line"]
-        result["messages"] = [death_msg] + list(result.get("messages") or [])
-        result["line"] = death_msg
-        result["deaths"] = self.deaths
+        self.last_reward_log.append(death_msg)
         self.save()
-        return result
+        return {
+            "event": "death",
+            "applied": applied,
+            "messages": [death_msg],
+            "line": death_msg,
+            "deaths": self.deaths,
+            "snapshot": self.snapshot(),
+        }
 
     def reward_event(self, event: str) -> Dict[str, Any]:
         if event == "death":
-            # prefer dedicated path when called as reward_event("death")
-            if time.time() - self._last_death_at >= 2.5:
-                return self.on_death()
-            # already handled this death tick
-            return {"event": "death", "applied": {}, "messages": [], "line": "", "skipped": True}
+            return self.on_death()
 
         table = EVENT_REWARDS.get(event, {})
         applied: Dict[str, float] = {}
