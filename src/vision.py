@@ -1,4 +1,4 @@
-"""Vision — Roblox only, food, water/lobby/threat, rail, portal."""
+"""Vision — Roblox only; strict water (bottom band); portal + rail priority."""
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -169,12 +169,15 @@ class VisionEncoder:
         center_dark = float(np.mean(center_patch < 0.35))
         loom_score = float(np.clip(center_motion * 4.0 + center_dark * 0.5, 0.0, 1.0))
 
-        water_mask = cv2.inRange(hsv, (90, 60, 40), (130, 255, 255))
-        water_ratio = float(np.count_nonzero(water_mask)) / float(water_mask.size)
+        # WATER: only bottom 35% — sky/UI blue must not count
+        y_water0 = int(CAPTURE_H * 0.65)
+        hsv_bottom = hsv[y_water0:, :, :]
+        water_mask = cv2.inRange(hsv_bottom, (95, 100, 70), (125, 255, 220))
+        water_ratio = float(np.count_nonzero(water_mask)) / float(max(1, water_mask.size))
         water_score = 0.0
         water_cx = 0.5
-        if water_ratio > 0.12:
-            water_score = min(1.0, (water_ratio - 0.08) * 3.0)
+        if water_ratio > 0.22:
+            water_score = min(1.0, (water_ratio - 0.18) * 4.0)
             ys, xs = np.where(water_mask > 0)
             if len(xs) > 0:
                 water_cx = float(xs.mean()) / CAPTURE_W
@@ -193,25 +196,32 @@ class VisionEncoder:
         red_ratio = float(np.count_nonzero(cv2.bitwise_or(red1, red2))) / float(frame.shape[0] * frame.shape[1])
         threat_score = float(np.clip(center_motion * 3.5 + red_ratio * 8.0 + loom_score * 0.5, 0.0, 1.0))
 
-        y0r, y1r = int(CAPTURE_H * 0.40), int(CAPTURE_H * 0.78)
+        y0r, y1r = int(CAPTURE_H * 0.35), int(CAPTURE_H * 0.80)
         lower = gray[y0r:y1r, :]
         col = lower.mean(axis=0)
-        ker = np.ones(9, dtype=np.float32) / 9.0
+        ker = np.ones(11, dtype=np.float32) / 11.0
         col_s = np.convolve(col, ker, mode="same")
         rail_i = int(np.argmax(col_s))
         rail_cx = float(rail_i) / float(CAPTURE_W)
-        rail_score = float(np.clip((float(col_s.max()) - float(col_s.mean())) * 4.0, 0.0, 1.0))
+        peak = float(col_s.max())
+        mean = float(col_s.mean()) + 1e-6
+        rail_score = float(np.clip((peak - mean) / mean * 2.5, 0.0, 1.0))
+        if peak < 0.25:
+            rail_score *= 0.4
 
-        portal_mask = cv2.inRange(hsv, (125, 70, 70), (165, 255, 255))
-        portal_ratio = float(np.count_nonzero(portal_mask)) / float(portal_mask.size)
+        hsv_mid = hsv[int(CAPTURE_H * 0.15):int(CAPTURE_H * 0.85), :, :]
+        portal_m1 = cv2.inRange(hsv_mid, (125, 60, 80), (170, 255, 255))
+        portal_m2 = cv2.inRange(hsv_mid, (85, 80, 120), (105, 255, 255))
+        portal_mask = cv2.bitwise_or(portal_m1, portal_m2)
+        portal_ratio = float(np.count_nonzero(portal_mask)) / float(max(1, portal_mask.size))
         portal_score = 0.0
         portal_cx, portal_cy = 0.5, 0.5
-        if 0.002 < portal_ratio < 0.18:
-            portal_score = min(1.0, portal_ratio * 18.0)
+        if 0.003 < portal_ratio < 0.25:
+            portal_score = min(1.0, portal_ratio * 16.0)
             ys, xs = np.where(portal_mask > 0)
             if len(xs):
                 portal_cx = float(xs.mean()) / CAPTURE_W
-                portal_cy = float(ys.mean()) / CAPTURE_H
+                portal_cy = float(np.clip(float(ys.mean()) / (CAPTURE_H * 0.7), 0.0, 1.0))
 
         threat_cx = 0.5
         if red_ratio > 0.01:
