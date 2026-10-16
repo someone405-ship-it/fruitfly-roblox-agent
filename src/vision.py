@@ -1,4 +1,4 @@
-"""Vision — Roblox only; rail/portal; kill-feed detect."""
+"""Vision — Roblox; kill-feed + death detect; rail/portal."""
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -27,6 +27,7 @@ class VisionEncoder:
         self.last_meta: Dict[str, Any] = {}
         self._last_title = ""
         self._prev_kill_score = 0.0
+        self._prev_death_score = 0.0
 
     def find_roblox_window_info(self):
         if gw is None:
@@ -76,7 +77,8 @@ class VisionEncoder:
             self.last_meta = {"motion": 0, "food_score": 0, "loom_score": 0, "no_roblox": True,
                               "water_score": 0, "lobby_score": 0, "threat_score": 0,
                               "rail_score": 0, "portal_score": 0, "threat_cx": 0.5,
-                              "kill_score": 0, "kill_event": False}
+                              "kill_score": 0, "kill_event": False,
+                              "death_score": 0, "death_event": False}
             return frame
         self.last_region = region
         try:
@@ -161,11 +163,11 @@ class VisionEncoder:
         if 0.004 < food_ratio < 0.25:
             food_score = min(1.0, food_ratio * 12.0)
 
-        y0, y1 = max(0, cy0 - 40), min(CAPTURE_H, cy0 + 40)
-        x0, x1 = max(0, cx0 - 50), min(CAPTURE_W, cx0 + 50)
-        center_patch = gray[y0:y1, x0:x1]
+        y0c, y1c = max(0, cy0 - 40), min(CAPTURE_H, cy0 + 40)
+        x0c, x1c = max(0, cx0 - 50), min(CAPTURE_W, cx0 + 50)
+        center_patch = gray[y0c:y1c, x0c:x1c]
         if self.prev_gray is not None:
-            center_motion = float(np.mean(np.abs(center_patch - self.prev_gray[y0:y1, x0:x1])))
+            center_motion = float(np.mean(np.abs(center_patch - self.prev_gray[y0c:y1c, x0c:x1c])))
         else:
             center_motion = 0.0
         center_dark = float(np.mean(center_patch < 0.35))
@@ -244,6 +246,17 @@ class VisionEncoder:
         kill_event = kill_score > 0.28 and prev_ks < 0.18
         self._prev_kill_score = 0.9 * prev_ks + 0.1 * kill_score
 
+        mean_bgr = frame.mean(axis=(0, 1))
+        red_bias = float(mean_bgr[2] - mean_bgr[1]) / 255.0
+        center_mean = float(gray[y0c:y1c, x0c:x1c].mean()) if y1c > y0c else float(gray.mean())
+        death_score = float(np.clip(
+            max(0.0, red_bias) * 3.0 + max(0.0, 0.35 - center_mean) * 2.0 + (0.2 if float(gray.mean()) < 0.22 else 0.0),
+            0.0, 1.0,
+        ))
+        prev_ds = float(self._prev_death_score)
+        death_event = death_score > 0.42 and prev_ds < 0.25
+        self._prev_death_score = 0.88 * prev_ds + 0.12 * death_score
+
         self.last_meta = {
             "motion": motion, "food_score": food_score, "brightness": float(gray.mean()),
             "edge": edge, "center_bright": center, "loom_score": loom_score,
@@ -254,6 +267,7 @@ class VisionEncoder:
             "portal_score": portal_score, "portal_cx": portal_cx, "portal_cy": portal_cy,
             "threat_cx": threat_cx,
             "kill_score": kill_score, "kill_event": bool(kill_event),
+            "death_score": death_score, "death_event": bool(death_event),
         }
         return vec
 
