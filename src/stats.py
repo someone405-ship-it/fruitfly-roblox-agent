@@ -1,4 +1,4 @@
-"""Permanent fly stats — luck, food, items, power… auto rewards with hard max."""
+"""Permanent fly stats — luck, food, items, power… auto rewards with hard max + death unreward."""
 from __future__ import annotations
 import json
 import time
@@ -24,7 +24,7 @@ STAT_LABELS = {
     "grit": "GRIT",
 }
 
-# What each event tries to grant (name -> amount)
+# Positive rewards
 EVENT_REWARDS = {
     "kill": {"luck": 1, "power": 2, "rage": 3, "items": 1, "grit": 1},
     "portal": {"focus": 2, "luck": 1, "grit": 1},
@@ -40,7 +40,19 @@ EVENT_REWARDS = {
     "loot_heal": {"vitality": 5},
     "loot_shield": {"shield": 5, "items": 1},
     "loot_jackpot": {"food": 3, "luck": 5, "power": 5, "speed": 5, "rage": 5, "items": 2},
-    "death": {"vitality": -8, "rage": -3, "grit": 2},
+    # death: heavy unreward (also handled by on_death for messages)
+    "death": {
+        "vitality": -12,
+        "food": -4,
+        "power": -5,
+        "rage": -6,
+        "speed": -4,
+        "shield": -5,
+        "luck": -2,
+        "items": -1,
+        "focus": -2,
+        "grit": 1,
+    },
 }
 
 MAX_LINES = [
@@ -51,6 +63,13 @@ MAX_LINES = [
     "PEAK {stat} — nothing more to gain here.",
 ]
 
+DEATH_LINES = [
+    "DEATH — unrewarded. lost food, power, rage, speed, shield.",
+    "YOU DIED — stats stripped. earn them back.",
+    "DOWN — unreward hit. vitality and loot took the fall.",
+    "DEATH PENALTY — no reward, only loss.",
+]
+
 
 class FlyStats:
     def __init__(self, path: str = STATS_PATH) -> None:
@@ -58,9 +77,11 @@ class FlyStats:
         self.values: Dict[str, float] = {k: 0.0 for k in STAT_ORDER}
         self.lifetime_gained: Dict[str, float] = {k: 0.0 for k in STAT_ORDER}
         self.maxed_counts: Dict[str, int] = {k: 0 for k in STAT_ORDER}
+        self.deaths = 0
         self.last_messages: List[str] = []
         self.last_reward_log: List[str] = []
         self.all_max_announced = False
+        self._last_death_at = 0.0
         self.load()
 
     def load(self) -> bool:
@@ -73,6 +94,7 @@ class FlyStats:
                 self.lifetime_gained[k] = float(d.get("lifetime", {}).get(k, 0.0))
                 self.maxed_counts[k] = int(d.get("maxed_counts", {}).get(k, 0))
             self.all_max_announced = bool(d.get("all_max_announced", False))
+            self.deaths = int(d.get("deaths", 0))
             return True
         except Exception:
             return False
@@ -83,6 +105,7 @@ class FlyStats:
             "lifetime": self.lifetime_gained,
             "maxed_counts": self.maxed_counts,
             "all_max_announced": self.all_max_announced,
+            "deaths": self.deaths,
             "updated": time.time(),
         }
         self.path.write_text(json.dumps(payload, indent=0), encoding="utf-8")
@@ -101,17 +124,17 @@ class FlyStats:
         return MAX_LINES[i].format(stat=STAT_LABELS.get(name, name.upper()))
 
     def grant(self, name: str, amount: float) -> Tuple[float, Optional[str]]:
-        """Try to add amount. Returns (actual_delta, message_or_None)."""
         if name not in self.values:
             return 0.0, None
         if amount == 0:
             return 0.0, None
 
-        # spending / loss always applies
         if amount < 0:
             before = self.values[name]
             self.values[name] = max(0.0, before + amount)
-            return self.values[name] - before, None
+            delta = self.values[name] - before
+            self.save()
+            return delta, None
 
         if self.is_max(name):
             self.maxed_counts[name] = int(self.maxed_counts.get(name, 0)) + 1
@@ -119,7 +142,6 @@ class FlyStats:
             self.last_messages.append(msg)
             if len(self.last_messages) > 12:
                 self.last_messages.pop(0)
-            # all-max special line once
             if self.all_max() and not self.all_max_announced:
                 self.all_max_announced = True
                 big = "ALL STATS MAX — you're fully powered. nothing left to stack. absolute peak."
@@ -149,8 +171,34 @@ class FlyStats:
         self.save()
         return applied, msg
 
+    def on_death(self) -> Dict[str, Any]:
+        """Roblox death — strip rewards. Debounced so one death != spam."""
+        now = time.time()
+        if now - self._last_death_at < 2.5:
+            return {"event": "death", "applied": {}, "messages": [], "line": "", "skipped": True}
+        self._last_death_at = now
+        self.deaths += 1
+
+        result = self.reward_event("death")
+        line_idx = self.deaths % len(DEATH_LINES)
+        death_msg = DEATH_LINES[line_idx]
+        self.last_messages.append(death_msg)
+        if result.get("line"):
+            death_msg = death_msg + " | " + result["line"]
+        result["messages"] = [death_msg] + list(result.get("messages") or [])
+        result["line"] = death_msg
+        result["deaths"] = self.deaths
+        self.save()
+        return result
+
     def reward_event(self, event: str) -> Dict[str, Any]:
-        """Apply a named event reward table."""
+        if event == "death":
+            # prefer dedicated path when called as reward_event("death")
+            if time.time() - self._last_death_at >= 2.5:
+                return self.on_death()
+            # already handled this death tick
+            return {"event": "death", "applied": {}, "messages": [], "line": "", "skipped": True}
+
         table = EVENT_REWARDS.get(event, {})
         applied: Dict[str, float] = {}
         messages: List[str] = []
@@ -195,10 +243,10 @@ class FlyStats:
             "bars": bars,
             "all_max": self.all_max(),
             "power_score": self.power_score(),
+            "deaths": self.deaths,
         }
 
     def power_score(self) -> float:
-        """0..1 overall fill."""
         total = 0.0
         for k in STAT_ORDER:
             mx = self.max_for(k)
@@ -206,7 +254,6 @@ class FlyStats:
         return float(total / max(1, len(STAT_ORDER)))
 
     def motor_mult(self) -> Dict[str, float]:
-        """Gameplay multipliers from stats."""
         def n(name: str) -> float:
             mx = self.max_for(name)
             return float(self.values.get(name, 0.0)) / mx if mx else 0.0
@@ -228,7 +275,7 @@ class FlyStats:
     def summary(self) -> str:
         bits = [f"{STAT_LABELS[k][:1]}{int(self.values[k])}" for k in STAT_ORDER]
         peak = " MAXED" if self.all_max() else ""
-        return "stats[" + " ".join(bits) + "]" + peak
+        return "stats[" + " ".join(bits) + f"] d={self.deaths}" + peak
 
 
 _STATS: Optional[FlyStats] = None
