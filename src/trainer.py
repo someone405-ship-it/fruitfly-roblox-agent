@@ -1,4 +1,4 @@
-"""Online training — keys + eyes + skills + mistakes + wins + potential/reflex (GPU-safe)."""
+"""Online training — keys + eyes + skills + mistakes + wins + potential/reflex + stats."""
 from __future__ import annotations
 import numpy as np
 from typing import Dict, List, Optional, Set
@@ -9,6 +9,7 @@ from .mistake_memory import MistakeMemory, WinMemory
 from .potential import get_potential
 from .reflex import get_reflex
 from . import runtime_reflex
+from .stats import get_stats
 
 HOST_KEY_TO_MOTOR: Dict[str, int] = {
     "w": 0, "s": 1, "a": 2, "d": 3, "space": 4, "shift": 5,
@@ -268,6 +269,12 @@ class Trainer:
             in_arena = ("in_arena" in notes) or bool(meta.get("in_arena"))
             bias_r, force, rnotes = get_reflex().react(meta, notes, in_arena=in_arena)
             sens, mx = pot.look_params()
+            # stats scale look further
+            try:
+                sm = get_stats().motor_mult()
+                sens *= float(sm.get("look", 1.0))
+            except Exception:
+                pass
             runtime_reflex.publish(
                 force, bias_r, rnotes,
                 threshold=pot.decide_threshold(),
@@ -284,6 +291,22 @@ class Trainer:
                 pot.on_event("join")
             if getattr(self, "last_mistake_msg", ""):
                 pot.on_event("mistake")
+            st = get_stats()
+            if "kill" in notes:
+                st.reward_event("kill")
+            if "portal_close" in notes or "portal_safe" in notes:
+                st.reward_event("portal")
+            if "self_join" in notes or "join_game" in notes:
+                st.reward_event("join")
+            if "water_death" in notes or meta.get("death_event"):
+                st.reward_event("death")
+            if getattr(self, "last_mistake_msg", ""):
+                st.reward_event("mistake")
+            for msg in st.take_messages():
+                if self.last_mistake_msg:
+                    self.last_mistake_msg = self.last_mistake_msg + " | " + msg
+                else:
+                    self.last_mistake_msg = msg
         except Exception:
             pass
         r = self.reward_from_notes(notes, meta, motor)
@@ -350,9 +373,14 @@ class Trainer:
         self.wins.save()
         try:
             get_potential().save()
+            get_stats().save()
         except Exception:
             pass
         try:
-            return f"{self.memory.summary()} | {self.eye.summary()} | {self.mistakes.summary()} | {self.wins.summary()} | {get_potential().summary()}"
+            return (
+                f"{self.memory.summary()} | {self.eye.summary()} | "
+                f"{self.mistakes.summary()} | {self.wins.summary()} | "
+                f"{get_potential().summary()} | {get_stats().summary()}"
+            )
         except Exception:
             return f"{self.memory.summary()} | {self.eye.summary()} | {self.mistakes.summary()} | {self.wins.summary()}"
