@@ -1,4 +1,4 @@
-"""Vision — Roblox only, fruit food, water/lobby/threat scores."""
+"""Vision — Roblox only, food, water/lobby/threat, rail, portal."""
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -73,7 +73,8 @@ class VisionEncoder:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 180, 255), 2)
             self.last_frame = frame
             self.last_meta = {"motion": 0, "food_score": 0, "loom_score": 0, "no_roblox": True,
-                              "water_score": 0, "lobby_score": 0, "threat_score": 0}
+                              "water_score": 0, "lobby_score": 0, "threat_score": 0,
+                              "rail_score": 0, "portal_score": 0, "threat_cx": 0.5}
             return frame
         self.last_region = region
         try:
@@ -192,12 +193,42 @@ class VisionEncoder:
         red_ratio = float(np.count_nonzero(cv2.bitwise_or(red1, red2))) / float(frame.shape[0] * frame.shape[1])
         threat_score = float(np.clip(center_motion * 3.5 + red_ratio * 8.0 + loom_score * 0.5, 0.0, 1.0))
 
+        y0r, y1r = int(CAPTURE_H * 0.40), int(CAPTURE_H * 0.78)
+        lower = gray[y0r:y1r, :]
+        col = lower.mean(axis=0)
+        ker = np.ones(9, dtype=np.float32) / 9.0
+        col_s = np.convolve(col, ker, mode="same")
+        rail_i = int(np.argmax(col_s))
+        rail_cx = float(rail_i) / float(CAPTURE_W)
+        rail_score = float(np.clip((float(col_s.max()) - float(col_s.mean())) * 4.0, 0.0, 1.0))
+
+        portal_mask = cv2.inRange(hsv, (125, 70, 70), (165, 255, 255))
+        portal_ratio = float(np.count_nonzero(portal_mask)) / float(portal_mask.size)
+        portal_score = 0.0
+        portal_cx, portal_cy = 0.5, 0.5
+        if 0.002 < portal_ratio < 0.18:
+            portal_score = min(1.0, portal_ratio * 18.0)
+            ys, xs = np.where(portal_mask > 0)
+            if len(xs):
+                portal_cx = float(xs.mean()) / CAPTURE_W
+                portal_cy = float(ys.mean()) / CAPTURE_H
+
+        threat_cx = 0.5
+        if red_ratio > 0.01:
+            rmask = cv2.bitwise_or(red1, red2)
+            ys, xs = np.where(rmask > 0)
+            if len(xs):
+                threat_cx = float(xs.mean()) / CAPTURE_W
+
         self.last_meta = {
             "motion": motion, "food_score": food_score, "brightness": float(gray.mean()),
             "edge": edge, "center_bright": center, "loom_score": loom_score,
             "no_roblox": False, "window_title": self._last_title,
             "water_score": water_score, "water_cx": water_cx,
             "lobby_score": lobby_score, "threat_score": threat_score,
+            "rail_score": rail_score, "rail_cx": rail_cx,
+            "portal_score": portal_score, "portal_cx": portal_cx, "portal_cy": portal_cy,
+            "threat_cx": threat_cx,
         }
         return vec
 
