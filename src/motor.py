@@ -1,4 +1,4 @@
-"""Motor decoder — clamped look, no corner slam, safe key holds."""
+"""Motor decoder — clamped look, WASD mutex, safe holds."""
 from __future__ import annotations
 from typing import List, Optional, Set
 import time
@@ -62,6 +62,15 @@ class MotorController:
             return []
         now = time.time()
         desired = set(actions)
+        for a, b in (("forward", "back"), ("left", "right")):
+            if a in desired and b in desired:
+                for x in actions:
+                    if x == a:
+                        desired.discard(b)
+                        break
+                    if x == b:
+                        desired.discard(a)
+                        break
         sent: List[str] = []
         for name in list(self.active):
             if name not in desired and name in KEY_MAP and KEY_MAP[name]:
