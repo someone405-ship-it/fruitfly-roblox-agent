@@ -1,4 +1,4 @@
-"""Motor — ultra-fast SendInput + ESC leave + scroll join + RMB look."""
+"""Motor — ultra-fast SendInput + ESC leave + scroll join + RMB look + mistake bans."""
 from __future__ import annotations
 import time
 import ctypes
@@ -16,6 +16,7 @@ except Exception:
     gw = None
 
 from .config import LOOK_SENSITIVITY, LOOK_MAX_PX, LOOK_INTERVAL, LOOK_DEADZONE
+from . import runtime_bans
 
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -258,6 +259,17 @@ class MotorController:
             return []
         now = time.time()
         desired = set(actions)
+        # permanent / learned mistake bans — never press these again in this context
+        try:
+            banned = runtime_bans.get_bans()
+            if banned:
+                desired -= banned
+            prefer = runtime_bans.get_prefer()
+            for p in prefer:
+                if p not in banned:
+                    desired.add(p)
+        except Exception:
+            pass
         for a, b in (("forward", "back"), ("left", "right")):
             if a in desired and b in desired:
                 for x in actions:
