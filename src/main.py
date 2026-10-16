@@ -68,7 +68,7 @@ class AgentWorker(QThread):
                 continue
             t0 = time.perf_counter()
             try:
-                if self.auto_focus and self.brain.steps % 20 == 0:
+                if self.auto_focus and self.brain.steps % 12 == 0:
                     self.motor.focus_roblox()
                 frame = self.vision.capture()
                 sensory = self.vision.encode(frame)
@@ -85,9 +85,9 @@ class AgentWorker(QThread):
                 motor, notes, binfo = self.behavior.modulate(motor, meta, circuit_bias=cbias)
                 info.update(binfo)
                 info.update(cread)
-                actions = self.brain.decide(motor, threshold=0.28)
+                actions = self.brain.decide(motor, threshold=0.18)
                 actions = [a for a in actions if not a.startswith("look_")]
-                if any(t in notes for t in ("explore", "rail", "seek_portal")) and "forward" not in actions and float(motor[0]) > 0.12:
+                if any(t in notes for t in ("explore", "rail", "seek_portal", "fight", "attack")) and "forward" not in actions and float(motor[0]) > 0.08:
                     actions.insert(0, "forward")
                 if "attack" in notes and "secondary" not in actions:
                     actions.append("secondary")
@@ -129,7 +129,7 @@ class AgentWorker(QThread):
                     f"{binfo.get('combat_mode','?')} hero={binfo.get('char_label', binfo.get('character','?'))} pain={binfo.get('pain',0):.2f}"
                 )
             except Exception as e:
-                self.log_ready.emit(f"error: {e}")
+                self.log_ready.emit(f"error: {type(e).__name__}: {e}")
             dt = (time.perf_counter() - t0) * 1000.0
             self.msleep(max(1, int(33 - dt)))
         self.motor.release_all()
