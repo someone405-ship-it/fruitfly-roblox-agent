@@ -9,3 +9,5 @@ mss>=9.0.0
 psutil>=5.9.0
 pywin32>=306; sys_platform == "win32"
 pyinstaller>=6.0.0
+# Optional GPU accel (NVIDIA CUDA). If install fails, app still runs on CPU.
+# pip install cupy-cuda12x   # or cupy-cuda11x matching your CUDA toolkit
