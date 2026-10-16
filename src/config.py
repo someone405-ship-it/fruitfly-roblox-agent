@@ -18,27 +18,29 @@ WARNING = "#FFC14D"
 MOTOR_POS = "#00E5FF"
 MOTOR_NEG = "#FF4D6A"
 
-N_SENSORY = 160
-N_HIDDEN = 3072
-N_MOTOR = 20
-DT_MS = 16.0
-TAU_MEM = 18.0
-TAU_SLOW = 80.0
+# Practical advanced scale (full 80k dense reservoir would need ~25GB+ RAM).
+# 8192 LIF units + expanded sensory + permanent skill memory = smart fly.
+N_SENSORY = 256
+N_HIDDEN = 8192
+N_MOTOR = 22
+DT_MS = 12.0
+TAU_MEM = 16.0
+TAU_SLOW = 90.0
 V_THRESH = 1.0
 V_RESET = 0.0
-NOISE_SCALE = 0.03
-SPARSITY = 0.10
-SPECTRAL_RADIUS = 0.98
+NOISE_SCALE = 0.025
+SPARSITY = 0.08
+SPECTRAL_RADIUS = 0.97
 
-CAPTURE_W = 400
-CAPTURE_H = 225
+CAPTURE_W = 480
+CAPTURE_H = 270
 FPS_TARGET = 30
 
 MOTOR_NAMES = [
     "forward", "back", "left", "right", "jump", "sprint",
     "look_left", "look_right", "look_up", "look_down",
     "interact", "chat_toggle", "ui_up", "ui_down", "ui_select", "reset",
-    "crouch", "emote", "camera", "secondary",
+    "crouch", "emote", "camera", "secondary", "rmb_look", "ability_f",
 ]
 
 MOTOR_LABELS = {
@@ -47,7 +49,7 @@ MOTOR_LABELS = {
     "look_left": "Look L", "look_right": "Look R", "look_up": "Look Up", "look_down": "Look Dn",
     "interact": "E ability", "chat_toggle": "Chat", "ui_up": "UI Up", "ui_down": "UI Dn",
     "ui_select": "Enter", "reset": "R ability", "crouch": "Ctrl", "emote": "Emote",
-    "camera": "Q ability", "secondary": "LMB",
+    "camera": "Q ability", "secondary": "LMB", "rmb_look": "RMB look", "ability_f": "F",
 }
 
 WINDOW_W = 1500
@@ -56,6 +58,7 @@ MONITOR_W = 640
 MONITOR_H = 360
 LOG_LINES = 300
 WEIGHTS_PATH = "fly_brain_weights.npz"
+SKILL_MEMORY_PATH = "fly_skill_memory.json"
 
 POWER_TIERS = [
     (0, 1.0, "dormant"),
@@ -63,6 +66,7 @@ POWER_TIERS = [
     (8, 1.16, "charged"),
     (15, 1.28, "ascendant"),
     (25, 1.42, "unlocked"),
+    (40, 1.55, "ascended"),
 ]
 
 

@@ -1,4 +1,4 @@
-"""Find and launch Roblox Player on Windows."""
+"""Find, launch, and fully open Roblox Player on Windows."""
 from __future__ import annotations
 import os
 import time
@@ -11,12 +11,14 @@ try:
 except ImportError:
     psutil = None
 
+
 def _versions_dir() -> Optional[Path]:
     local = os.environ.get("LOCALAPPDATA", "")
     if not local:
         return None
     p = Path(local) / "Roblox" / "Versions"
     return p if p.is_dir() else None
+
 
 def find_roblox_player() -> Optional[str]:
     base = _versions_dir()
@@ -38,6 +40,7 @@ def find_roblox_player() -> Optional[str]:
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return str(candidates[0])
 
+
 def is_roblox_running() -> bool:
     if psutil is None:
         return False
@@ -50,9 +53,54 @@ def is_roblox_running() -> bool:
         pass
     return False
 
-def launch_roblox(wait_seconds: float = 6.0) -> Tuple[bool, str]:
+
+def maximize_roblox_window() -> bool:
+    """Bring Roblox to foreground and maximize so the page is fully open."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        SW_RESTORE = 9
+        SW_MAXIMIZE = 3
+        found = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        def enum_cb(h, _lp):
+            if not user32.IsWindowVisible(h):
+                return True
+            length = user32.GetWindowTextLengthW(h)
+            if length < 1:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(h, buf, length + 1)
+            title = (buf.value or "").lower()
+            if "roblox" in title and "fruitfly" not in title:
+                found.append(h)
+            return True
+
+        user32.EnumWindows(enum_cb, 0)
+        if not found:
+            return False
+        hwnd = found[0]
+        user32.ShowWindow(hwnd, SW_RESTORE)
+        time.sleep(0.15)
+        user32.ShowWindow(hwnd, SW_MAXIMIZE)
+        user32.SetForegroundWindow(hwnd)
+        # force top-level activation
+        try:
+            user32.BringWindowToTop(hwnd)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def launch_roblox(wait_seconds: float = 6.0, maximize: bool = True) -> Tuple[bool, str]:
     if is_roblox_running():
-        return True, "Roblox already running"
+        if maximize:
+            maximize_roblox_window()
+        return True, "Roblox already running (maximized)" if maximize else "Roblox already running"
     path = find_roblox_player()
     if not path:
         return False, "Roblox Player not found under %LOCALAPPDATA%\\Roblox\\Versions"
@@ -63,6 +111,11 @@ def launch_roblox(wait_seconds: float = 6.0) -> Tuple[bool, str]:
     deadline = time.time() + max(1.0, wait_seconds)
     while time.time() < deadline:
         if is_roblox_running():
-            return True, f"Roblox launched: {path}"
+            time.sleep(0.8)
+            if maximize:
+                maximize_roblox_window()
+            return True, f"Roblox launched + maximized: {path}"
         time.sleep(0.4)
+    if maximize:
+        maximize_roblox_window()
     return True, f"Roblox start requested: {path} (window may still be loading)"
