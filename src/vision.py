@@ -1,8 +1,8 @@
-"""Vision encoder — Roblox window preferred, fixed N_SENSORY vector."""
+"""Vision — capture Roblox only, never the FruitFly agent window."""
 from __future__ import annotations
 import numpy as np
 import cv2
-from typing import Optional
+from typing import Optional, Dict, Any
 
 try:
     import mss
@@ -23,19 +23,30 @@ class VisionEncoder:
         self.last_frame: Optional[np.ndarray] = None
         self.last_gray: Optional[np.ndarray] = None
         self.prev_gray: Optional[np.ndarray] = None
-        self.prefer_roblox = True
+        self.last_region: Optional[dict] = None
+        self.last_meta: Dict[str, Any] = {}
 
     def _find_roblox_region(self):
         if gw is None:
             return None
         try:
-            wins = [w for w in gw.getAllWindows()
-                    if w.title and "roblox" in w.title.lower() and getattr(w, "visible", True)]
+            wins = []
+            for w in gw.getAllWindows():
+                title = (w.title or "").lower()
+                if not title:
+                    continue
+                if "fruitfly" in title:
+                    continue
+                if "roblox" not in title:
+                    continue
+                if getattr(w, "visible", True) is False:
+                    continue
+                if w.width < 200 or w.height < 150:
+                    continue
+                wins.append(w)
             if not wins:
                 return None
             w = max(wins, key=lambda x: max(0, x.width) * max(0, x.height))
-            if w.width < 100 or w.height < 100:
-                return None
             return {"left": int(w.left), "top": int(w.top), "width": int(w.width), "height": int(w.height)}
         except Exception:
             return None
@@ -45,13 +56,14 @@ class VisionEncoder:
             frame = np.zeros((CAPTURE_H, CAPTURE_W, 3), dtype=np.uint8)
             self.last_frame = frame
             return frame
-        if region is None and self.prefer_roblox:
+        if region is None:
             region = self._find_roblox_region()
         if region is None:
             mons = self.sct.monitors
-            idx = min(self.monitor_index, len(mons) - 1)
+            idx = min(max(1, self.monitor_index), len(mons) - 1)
             mon = mons[idx]
             region = {"left": mon["left"], "top": mon["top"], "width": mon["width"], "height": mon["height"]}
+        self.last_region = region
         try:
             shot = self.sct.grab(region)
             frame = np.array(shot)[:, :, :3]
@@ -79,9 +91,11 @@ class VisionEncoder:
             float(np.mean(np.abs(sx))), float(np.mean(np.abs(sy))),
             float(np.std(sx)), float(np.std(sy)),
         ], dtype=np.float32))
+        motion = 0.0
         if self.prev_gray is not None:
             diff = np.abs(gray - self.prev_gray)
-            feats.append(np.array([float(np.mean(diff)), float(np.std(diff)), float(np.percentile(diff, 90))], dtype=np.float32))
+            motion = float(np.mean(diff))
+            feats.append(np.array([motion, float(np.std(diff)), float(np.percentile(diff, 90))], dtype=np.float32))
         else:
             feats.append(np.zeros(3, dtype=np.float32))
         bright = (gray > 0.65).astype(np.float32)
@@ -105,10 +119,7 @@ class VisionEncoder:
         q = [float(gray[r:r + h2, c:c + w2].mean()) for r in (0, h2) for c in (0, w2)]
         feats.append(np.array(q, dtype=np.float32))
         h4, w4 = max(1, CAPTURE_H // 4), max(1, CAPTURE_W // 4)
-        grid = []
-        for r in range(0, CAPTURE_H, h4):
-            for c in range(0, CAPTURE_W, w4):
-                grid.append(float(gray[r:r + h4, c:c + w4].mean()))
+        grid = [float(gray[r:r + h4, c:c + w4].mean()) for r in range(0, CAPTURE_H, h4) for c in range(0, CAPTURE_W, w4)]
         feats.append(np.array(grid[:16], dtype=np.float32))
         small = cv2.resize(gray, (10, 6), interpolation=cv2.INTER_AREA).ravel().astype(np.float32)
         feats.append(small)
@@ -124,6 +135,9 @@ class VisionEncoder:
         else:
             vec = vec[:N_SENSORY]
         np.clip(vec, 0.0, 1.0, out=vec)
+        b, g, r = float(means[0]), float(means[1]), float(means[2])
+        food_score = max(0.0, g - b * 0.5) + max(0.0, r - b * 0.4)
+        self.last_meta = {"motion": motion, "food_score": food_score, "brightness": float(gray.mean()), "edge": edge, "center_bright": center}
         return vec
 
     def close(self) -> None:
