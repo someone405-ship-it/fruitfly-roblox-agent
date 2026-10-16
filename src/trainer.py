@@ -1,19 +1,15 @@
-"""Online training for the advanced fly brain readout."""
-
+"""Online training — faster readout plasticity + explore bootstrap."""
 from __future__ import annotations
-
 import numpy as np
 from typing import Dict, List
-
-from .config import N_MOTOR
+from .config import N_MOTOR, N_SENSORY
 
 HOST_KEY_TO_MOTOR: Dict[str, int] = {
     "w": 0, "s": 1, "a": 2, "d": 3, "space": 4, "shift": 5, "e": 10,
 }
 
-
 class Trainer:
-    def __init__(self, brain, lr: float = 0.06) -> None:
+    def __init__(self, brain, lr: float = 0.12) -> None:
         self.brain = brain
         self.lr = lr
         self.enabled = False
@@ -53,3 +49,17 @@ class Trainer:
         motor = self.brain.last_motor
         self.brain.W_out += self.lr * reward * np.outer(motor, rate)
         self.samples += 1
+
+    def bootstrap_explore(self, steps: int = 200) -> None:
+        rng = np.random.default_rng(7)
+        target = np.zeros(N_MOTOR, dtype=np.float32)
+        target[0] = 0.9
+        target[5] = 0.2
+        for _ in range(steps):
+            s = rng.random(N_SENSORY).astype(np.float32) * 0.6
+            self.brain.step(s)
+            rate = 0.7 * self.brain.rate + 0.3 * self.brain.rate_slow
+            pred = self.brain.W_out @ rate
+            err = target - np.tanh(pred)
+            self.brain.W_out += self.lr * np.outer(err, rate)
+            self.samples += 1
