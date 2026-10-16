@@ -1,4 +1,4 @@
-"""FruitFly Roblox Agent — circuit + reservoir + instincts."""
+"""FruitFly Roblox Agent — arena gate, SendInput motor, 3D mouse."""
 from __future__ import annotations
 import sys
 import time
@@ -24,6 +24,7 @@ from .motor_panel import MotorOutputPanel
 from .behavior import BehaviorLayer
 from .circuit import FlyCircuit
 from .circuit_panel import CircuitPanel
+from .mouse3d import Mouse3DWidget
 from . import input_lock
 
 
@@ -67,7 +68,7 @@ class AgentWorker(QThread):
                 continue
             t0 = time.perf_counter()
             try:
-                if self.auto_focus and self.brain.steps % 30 == 0:
+                if self.auto_focus and self.brain.steps % 20 == 0:
                     self.motor.focus_roblox()
                 frame = self.vision.capture()
                 sensory = self.vision.encode(frame)
@@ -76,7 +77,7 @@ class AgentWorker(QThread):
                 loom = float(meta.get("loom_score", 0.0))
                 motion = float(meta.get("motion", 0.0))
                 turn = float(motor[2] - motor[3]) if motor.size > 3 else 0.0
-                fwd_drive = max(0.0, float(motor[0]) * 0.5 + 0.35)
+                fwd_drive = max(0.0, float(motor[0]) * 0.5 + 0.4)
                 calm = max(0.0, 1.0 - loom - motion * 2)
                 cread = self.circuit.step(loom=loom, forward_drive=fwd_drive, turn=turn, calm=calm)
                 self.last_circuit = cread
@@ -84,8 +85,10 @@ class AgentWorker(QThread):
                 motor, notes, binfo = self.behavior.modulate(motor, meta, circuit_bias=cbias)
                 info.update(binfo)
                 info.update(cread)
-                actions = self.brain.decide(motor, threshold=0.38)
+                actions = self.brain.decide(motor, threshold=0.28)
                 actions = [a for a in actions if not a.startswith("look_")]
+                if "explore" in notes and "forward" not in actions and float(motor[0]) > 0.15:
+                    actions.insert(0, "forward")
                 sent = self.motor.apply(actions, motor.tolist())
                 chat = self.behavior.take_chat()
                 if chat:
@@ -210,7 +213,6 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(False)
         ctrl.addWidget(self.btn_stop)
         self.btn_scare = QPushButton("SCARE")
-        self.btn_scare.setToolTip("Inject fear / GF-style startle")
         self.btn_scare.clicked.connect(self._on_scare)
         self.btn_scare.setVisible(False)
         ctrl.addWidget(self.btn_scare)
@@ -242,6 +244,8 @@ class MainWindow(QMainWindow):
         rl = QVBoxLayout(right)
         self.fly_kb = FlyKeyboardWidget()
         rl.addWidget(self.fly_kb)
+        self.mouse3d = Mouse3DWidget()
+        rl.addWidget(self.mouse3d)
         self.stats_lbl = QLabel("waiting")
         rl.addWidget(self.stats_lbl)
         rl.addStretch()
@@ -281,7 +285,7 @@ class MainWindow(QMainWindow):
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("READY — START. SCARE = startle. F9 = emergency stop.")
+        self.setup_lbl.setText("Join Superhero Arena first, then START. SCARE=startle. F9=stop.")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
@@ -289,16 +293,36 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
 
+    def _roblox_ready_for_play(self) -> bool:
+        try:
+            info = self.worker.vision.find_roblox_window_info()
+        except Exception:
+            info = None
+        if not info:
+            self.log_view.append("No Roblox window — join Superhero Arena first")
+            return False
+        title = (info.get("title") or "").lower()
+        self.log_view.append(f"Roblox window: {info.get('title')}")
+        if "superhero" in title or "arena" in title:
+            return True
+        if info.get("is_experience"):
+            return True
+        self.log_view.append("Press Play on Superhero Arena so you are in the game")
+        return False
+
     def _on_start(self) -> None:
         if not self._setup_done or self._flying:
             return
         if not is_roblox_running():
             launch_roblox(6.0)
+        if not self._roblox_ready_for_play():
+            self.setup_lbl.setText("Join Superhero Arena in Roblox, then press START")
+            return
         self.worker.start_fly()
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — STOP/F9 unlocks. Keep Roblox visible.")
+        self.watch_lbl.setText("WATCH ONLY — STOP/F9 unlocks. Keep Superhero Arena focused.")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -313,7 +337,7 @@ class MainWindow(QMainWindow):
     def _on_scare(self) -> None:
         try:
             self.worker.behavior.scare()
-            self.log_view.append("SCARE — fear spike / alert")
+            self.log_view.append("SCARE — fear spike")
         except Exception as e:
             self.log_view.append(f"scare failed: {e}")
 
@@ -342,6 +366,11 @@ class MainWindow(QMainWindow):
 
     def _on_motor(self, d: dict, a: list) -> None:
         self.motor_panel.set_motor(d, a)
+        try:
+            dx, dy = self.worker.motor.last_mouse
+            self.mouse3d.set_delta(dx, dy)
+        except Exception:
+            pass
 
     def _on_stats(self, info: dict) -> None:
         self.circuit_panel.set_rates(info)
@@ -350,7 +379,7 @@ class MainWindow(QMainWindow):
             f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
             f"fear={info.get('fear',0):.2f} arousal={info.get('arousal',0):.2f}\n"
             f"loom={info.get('loom_score',0):.2f} gf={info.get('gf_rate',0):.2f}\n"
-            f"lock={'ON' if input_lock.is_locked() else 'off'}"
+            f"food={info.get('food_score',0):.2f} lock={'ON' if input_lock.is_locked() else 'off'}"
         )
 
     def closeEvent(self, e) -> None:
