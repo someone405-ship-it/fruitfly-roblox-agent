@@ -17,4 +17,11 @@ def get_bans() -> Set[str]:
 
 
 def get_prefer() -> Set[str]:
-    return set(_PREFER)
+    """Prefer + reflex force actions (so motor.apply picks them without extra imports)."""
+    out = set(_PREFER)
+    try:
+        from . import runtime_reflex
+        out |= runtime_reflex.get_force()
+    except Exception:
+        pass
+    return out

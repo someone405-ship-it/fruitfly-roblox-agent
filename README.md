@@ -1,41 +1,49 @@
-# FruitFly Roblox Agent — 139,255 (FlyWire scale)
+# FruitFly Roblox Agent — 139,255 + Potential Unlock + Reflex
 
-**139,255 LIF units** — the official FlyWire FAFB v783 whole-brain neuron count (Dorkenwald et al. 2024).
-Block-sparse dynamics so it runs live on a Windows laptop. Not the real 50M-synapse graph (that needs specialized sparse GPU kernels); same **unit count**, real-time vision → keys/mouse.
+**139,255 LIF units** (FlyWire FAFB v783 count) · block-sparse · Windows laptop.
 
-## This update
+## Potential unlock (permanent)
 
-| Feature | Detail |
-|---------|--------|
-| Neurons | **139,255** (FlyWire published count) |
-| Setup | **45s** Roblox wait + **12 retries** + multi-pass maximize |
-| Packages | Auto-install missing deps on start (skips if already installed) |
-| Mouse | sens **95**, max **165px**, **4ms** ticks |
-| Keys | short pulse, low latency SendInput |
-| Learn | keys + eyes → permanent files |
-| Leave/join | Esc, scroll, UI select |
+Saved in `fly_potential.json`. XP from play time, kills, portals, joins, mistakes.
 
-## Run (Windows laptop)
+| Unlock | Effect |
+|--------|--------|
+| reflex_water / portal / loom | Instant reactions from vision |
+| snap_aim | Higher mouse sensitivity |
+| fast_decide | Lower action threshold |
+| overdrive / limit_break | Stronger motor + aim |
+
+## Reflex pack (research-inspired reactive vision→motor)
+
+- **Water** → block forward, force back/jump  
+- **Portal** → sprint in  
+- **Loom/threat** → jump + strafe  
+- **Arena threat** → commit attack  
+- **Threat outside arena** → flee, no fight  
+
+## Fast I/O
+
+- Look sens **110**, max **185px**, interval **3ms**  
+- Tick **4ms** brain DT  
+
+## Other memory
+
+- `fly_mistake_memory.json` — never repeat failures  
+- `fly_win_memory.json` — reinforce wins  
+- `fly_eye_memory.npz` / `fly_skill_memory.json`  
+
+## Run
 
 ```bash
-git clone https://github.com/someone405-ship-it/fruitfly-roblox-agent.git
-cd fruitfly-roblox-agent
+git pull
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 python run_app.py
 ```
 
-`run_app.py` installs any **missing** packages automatically; already-installed ones are ignored.
+Optional: `python -m src.sanity_check`
 
-First brain build can take **1–3 minutes** (139k units). Wait for the green ready line.
+**Windows only** (not Android/iPhone).
 
-**START** · **LEARN FROM ME** · **F9** emergency
-
-Saves: `fly_brain_weights.npz` · `fly_skill_memory.json` · `fly_eye_memory.npz`
-
-Optional NVIDIA: `pip install cupy-cuda12x`
-
-**Not on iPhone/Android** — needs Windows desktop input + screen capture.
-
-MIT. Absolute olliE.
+MIT.
