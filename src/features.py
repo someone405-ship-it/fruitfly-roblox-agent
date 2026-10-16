@@ -1,6 +1,5 @@
-"""Active feature registry — unlocked potential pack."""
+"""Active feature registry — stats + potential + reflex pack."""
 FEATURES = [
-    # core autonomy
     "free_will_goal_softmax",
     "personality_aggression",
     "personality_curiosity",
@@ -12,7 +11,6 @@ FEATURES = [
     "drive_fatigue",
     "drive_arousal",
     "drive_confidence",
-    # goals
     "goal_explore",
     "goal_wander",
     "goal_fight",
@@ -28,7 +26,6 @@ FEATURES = [
     "goal_forage",
     "goal_rest",
     "goal_camera_look",
-    # combat
     "lock_in_combat",
     "circle_strafe",
     "predict_dodge",
@@ -37,14 +34,12 @@ FEATURES = [
     "pain_anger_model",
     "water_avoid",
     "lobby_ui_navigate",
-    # learning
     "learn_from_me_imitation",
     "online_reward_train",
     "success_memory_bias",
     "mistake_memory_permanent",
     "win_memory_permanent",
     "eye_key_imitation",
-    # vision / motor
     "edge_chat_danger_food",
     "vision_rail_portal",
     "motor_percent_panel",
@@ -52,7 +47,6 @@ FEATURES = [
     "watch_only_input_lock",
     "ultra_fast_mouse",
     "ultra_fast_keys",
-    # kills / loot
     "kill_feed_detect",
     "kill_edge_trigger",
     "kill_gamble_loot",
@@ -71,7 +65,6 @@ FEATURES = [
     "buff_shield_from_kill",
     "kill_train_reward",
     "kill_chat_drop",
-    # scale / power
     "neurons_139255_flywire",
     "power_unlock_tiers",
     "potential_xp_level",
@@ -79,20 +72,38 @@ FEATURES = [
     "potential_fast_decide",
     "potential_overdrive",
     "potential_limit_break",
-    # reflex pack (research: reactive vision-motor)
     "reflex_loom_dodge",
     "reflex_portal_sprint",
     "reflex_water_block",
     "reflex_arena_commit",
     "reflex_flee_no_portal",
-    # death
     "death_detect",
     "death_hurt",
     "death_food_loss",
     "death_flee_reset",
-    # ui
     "mouse_3d_isometric",
     "figma_ui_hover",
     "kill_always_reward",
+    # stats panel pack
+    "stats_panel_ui",
+    "stat_luck",
+    "stat_food",
+    "stat_items",
+    "stat_power",
+    "stat_speed",
+    "stat_rage",
+    "stat_shield",
+    "stat_vitality",
+    "stat_focus",
+    "stat_grit",
+    "stat_hard_max_caps",
+    "stat_max_messages",
+    "stat_all_max_peak",
+    "stat_auto_reward_kill",
+    "stat_auto_reward_loot",
+    "stat_auto_reward_portal",
+    "stat_motor_mult_from_stats",
+    "stat_luck_biases_loot",
+    "stat_permanent_json",
 ]
-assert len(FEATURES) >= 50
+assert len(FEATURES) >= 60

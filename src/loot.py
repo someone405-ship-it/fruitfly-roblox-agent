@@ -1,4 +1,4 @@
-"""Kill rewards — gamble table, mostly food."""
+"""Kill rewards — gamble table + fly stats grants."""
 from __future__ import annotations
 import time
 from typing import Dict, List, Optional, Tuple
@@ -15,6 +15,17 @@ LOOT_TABLE = [
     ("jackpot", 1, {"food": 5, "speed": 12.0, "rage": 12.0, "heal": 0.5}),
 ]
 
+DROP_TO_STAT_EVENT = {
+    "food": "loot_food",
+    "food_x2": "loot_food_x2",
+    "food_feast": "loot_food_feast",
+    "speed_candy": "loot_speed",
+    "rage_candy": "loot_rage",
+    "heal_bit": "loot_heal",
+    "shield_bit": "loot_shield",
+    "jackpot": "loot_jackpot",
+}
+
 
 class KillLootSystem:
     def __init__(self, seed: int = 21) -> None:
@@ -28,10 +39,21 @@ class KillLootSystem:
         self.last_drop: Optional[str] = None
         self.last_drop_at = 0.0
         self.history: List[str] = []
+        self.last_stat_messages: List[str] = []
 
     def weights(self) -> Tuple[List[str], np.ndarray]:
         names = [x[0] for x in LOOT_TABLE]
         w = np.array([x[1] for x in LOOT_TABLE], dtype=np.float64)
+        # luck from stats boosts rare drops slightly
+        try:
+            from .stats import get_stats
+            luck = get_stats().motor_mult().get("loot_luck", 1.0)
+            # boost non-food slightly with luck
+            for i, n in enumerate(names):
+                if n != "food":
+                    w[i] *= float(luck)
+        except Exception:
+            pass
         w = w / w.sum()
         return names, w
 
@@ -59,14 +81,35 @@ class KillLootSystem:
         self.history.append(name)
         if len(self.history) > 30:
             self.history.pop(0)
+
+        # permanent stats
+        stat_result = {}
+        try:
+            from .stats import get_stats
+            st = get_stats()
+            st.reward_event("kill")
+            ev = DROP_TO_STAT_EVENT.get(name)
+            if ev:
+                stat_result = st.reward_event(ev)
+            self.last_stat_messages = st.take_messages()
+        except Exception:
+            self.last_stat_messages = []
+
         return {
             "kill": True, "drop": name, "food_gain": food_gain,
             "food_total": self.food, "kills": self.kills, "heal": heal, "payload": payload,
+            "stat_result": stat_result,
+            "stat_messages": list(self.last_stat_messages),
         }
 
     def spend_food(self, n: int = 1) -> bool:
         if self.food >= n:
             self.food -= n
+            try:
+                from .stats import get_stats
+                get_stats().grant("food", -float(n))
+            except Exception:
+                pass
             return True
         return False
 
@@ -80,8 +123,14 @@ class KillLootSystem:
 
     def snapshot(self) -> Dict:
         b = self.active_buffs()
-        return {
+        out = {
             "kills": self.kills, "food": self.food, "food_earned": self.total_food_earned,
             "last_drop": self.last_drop or "",
             "buff_speed": b["speed"], "buff_rage": b["rage"], "buff_shield": b["shield"],
         }
+        try:
+            from .stats import get_stats
+            out["fly_stats"] = get_stats().snapshot()
+        except Exception:
+            pass
+        return out
