@@ -1,4 +1,4 @@
-"""FruitFly Roblox Agent — multi-hero + online train."""
+"""FruitFly Roblox Agent — LEARN FROM ME + lock-in combat."""
 from __future__ import annotations
 import sys
 import time
@@ -25,7 +25,7 @@ from .behavior import BehaviorLayer
 from .circuit import FlyCircuit
 from .circuit_panel import CircuitPanel
 from .mouse3d import Mouse3DWidget
-from . import input_lock
+from . import input_lock, host_learn
 
 
 class AgentWorker(QThread):
@@ -50,6 +50,7 @@ class AgentWorker(QThread):
         self.behavior = BehaviorLayer()
         self.circuit = FlyCircuit(seed=3)
         self.auto_focus = True
+        self.learning = False
         self.last_circuit = {}
         try:
             self.trainer.bootstrap_explore(420)
@@ -63,17 +64,36 @@ class AgentWorker(QThread):
             self.log_ready.emit(f"pre-train samples={self.trainer.samples}")
         self.worker_ready.emit()
         while self._running:
-            if self._paused:
+            if self._paused and not self.learning:
                 self.msleep(40)
                 continue
             t0 = time.perf_counter()
             try:
-                if self.auto_focus and self.brain.steps % 12 == 0:
+                if self.learning:
+                    frame = self.vision.capture()
+                    sensory = self.vision.encode(frame)
+                    motor, info = self.brain.step(sensory)
+                    keys = host_learn.keys_down()
+                    self.trainer.set_mode("imitation")
+                    self.trainer.record_host_keys(keys)
+                    err = self.trainer.step_imitation()
+                    self.frame_ready.emit(frame)
+                    self.stats_ready.emit({**info, "learning": True, "imit_samples": self.trainer.imit_samples})
+                    if keys:
+                        self.log_ready.emit(f"learn <- {','.join(keys)} err={err:.3f} n={self.trainer.imit_samples}")
+                    elif self.brain.steps % 30 == 0:
+                        self.log_ready.emit(f"learn idle n={self.trainer.imit_samples}")
+                    self.status_ready.emit(f"LEARNING from you  samples={self.trainer.imit_samples}")
+                    self.msleep(20)
+                    continue
+
+                if self.auto_focus and self.brain.steps % 8 == 0:
                     self.motor.focus_roblox()
                 frame = self.vision.capture()
                 sensory = self.vision.encode(frame)
                 motor, info = self.brain.step(sensory)
                 meta = self.vision.last_meta
+                self.trainer.set_mode("reward")
                 loom = float(meta.get("loom_score", 0.0))
                 motion = float(meta.get("motion", 0.0))
                 turn = float(motor[2] - motor[3]) if motor.size > 3 else 0.0
@@ -85,12 +105,15 @@ class AgentWorker(QThread):
                 motor, notes, binfo = self.behavior.modulate(motor, meta, circuit_bias=cbias)
                 info.update(binfo)
                 info.update(cread)
-                actions = self.brain.decide(motor, threshold=0.18)
+                actions = self.brain.decide(motor, threshold=0.16)
                 junk = {"ui_up", "ui_down", "ui_select", "emote", "crouch", "chat_toggle"}
                 actions = [a for a in actions if not a.startswith("look_") and a not in junk]
-                if any(t in notes for t in ("explore", "rail", "seek_portal", "fight", "attack")) and "forward" not in actions and float(motor[0]) > 0.08:
-                    actions.insert(0, "forward")
-                if "attack" in notes and "secondary" not in actions:
+                if any(t in notes for t in ("explore", "rail", "seek_portal", "fight", "attack", "lock_in")):
+                    if "forward" not in actions:
+                        actions.insert(0, "forward")
+                    if "sprint" not in actions and any(t in notes for t in ("fight", "attack", "lock_in", "seek_portal")):
+                        actions.append("sprint")
+                if any(t in notes for t in ("attack", "fight", "lock_in")) and "secondary" not in actions:
                     actions.append("secondary")
                 if "q_dash" in notes and "camera" not in actions:
                     actions.append("camera")
@@ -132,7 +155,7 @@ class AgentWorker(QThread):
             except Exception as e:
                 self.log_ready.emit(f"error: {type(e).__name__}: {e}")
             dt = (time.perf_counter() - t0) * 1000.0
-            self.msleep(max(1, int(33 - dt)))
+            self.msleep(max(1, int(28 - dt)))
         self.motor.release_all()
         self.vision.close()
         try:
@@ -140,6 +163,7 @@ class AgentWorker(QThread):
         except Exception:
             pass
         input_lock.unlock()
+        host_learn.stop()
 
     def start_fly(self) -> None:
         self.motor.resume()
@@ -158,12 +182,15 @@ class AgentWorker(QThread):
         self._paused = True
         self.motor.emergency_stop()
         input_lock.unlock()
+        host_learn.stop()
+        self.learning = False
         self.log_ready.emit("F9 emergency")
 
     def stop(self) -> None:
         self._running = False
         self.motor.release_all()
         input_lock.unlock()
+        host_learn.stop()
 
 
 class MainWindow(QMainWindow):
@@ -238,6 +265,12 @@ class MainWindow(QMainWindow):
         self.btn_scare.clicked.connect(self._on_scare)
         self.btn_scare.setVisible(False)
         ctrl.addWidget(self.btn_scare)
+        self.btn_learn = QPushButton("LEARN FROM ME")
+        self.btn_learn.setCheckable(True)
+        self.btn_learn.clicked.connect(self._on_learn)
+        self.btn_learn.setVisible(False)
+        self.btn_learn.setStyleSheet(f"QPushButton:checked {{ background:{ACCENT}; color:#0B0E14; }}")
+        ctrl.addWidget(self.btn_learn)
         ctrl.addStretch()
         root.addLayout(ctrl)
         self.watch_lbl = QLabel("")
@@ -307,11 +340,12 @@ class MainWindow(QMainWindow):
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("Heroes: Deadpool / Batman / War Machine. Portal+rail first. No UI spam.")
+        self.setup_lbl.setText("LEARN FROM ME = you play, fly copies. Lock-in combat. Portal/rail follow.")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
         self.btn_scare.setVisible(True)
+        self.btn_learn.setVisible(True)
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
 
@@ -333,6 +367,9 @@ class MainWindow(QMainWindow):
     def _on_start(self) -> None:
         if not self._setup_done or self._flying:
             return
+        if self.btn_learn.isChecked():
+            self.btn_learn.setChecked(False)
+            self._on_learn()
         if not is_roblox_running():
             launch_roblox(6.0)
         if not self._roblox_ready_for_play():
@@ -342,7 +379,7 @@ class MainWindow(QMainWindow):
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — STOP/F9. Follows portal/rail. No chat spam.")
+        self.watch_lbl.setText("WATCH ONLY — STOP/F9. Lock-in fights. Follows portal/rail.")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -357,13 +394,38 @@ class MainWindow(QMainWindow):
     def _on_scare(self) -> None:
         try:
             self.worker.behavior.scare()
-            self.log_view.append("SCARE — pain up, may switch hero")
+            self.log_view.append("SCARE — pain up, then lock-in")
         except Exception as e:
             self.log_view.append(f"scare failed: {e}")
+
+    def _on_learn(self) -> None:
+        on = self.btn_learn.isChecked()
+        if on:
+            if self._flying:
+                self.worker.stop_fly()
+                self._flying = False
+                self.btn_start.setEnabled(True)
+                self.btn_stop.setEnabled(False)
+                self.watch_lbl.setVisible(False)
+            ok = host_learn.start()
+            self.worker.learning = True
+            self.worker._paused = False
+            self.btn_learn.setText("LEARNING… (click to stop)")
+            self.log_view.append("LEARN FROM ME ON — play Roblox yourself; fly copies WASD/Shift/Space/QER")
+            if not ok:
+                self.log_view.append("learn: key capture failed")
+        else:
+            host_learn.stop()
+            self.worker.learning = False
+            self.worker._paused = True
+            self.btn_learn.setText("LEARN FROM ME")
+            self.log_view.append(f"LEARN OFF — imit samples={self.worker.trainer.imit_samples} (weights save on exit)")
 
     def _on_emergency(self) -> None:
         self.worker.emergency()
         self._flying = False
+        self.btn_learn.setChecked(False)
+        self.btn_learn.setText("LEARN FROM ME")
         if self._setup_done:
             self.btn_start.setEnabled(True)
             self.btn_stop.setEnabled(False)
@@ -393,6 +455,13 @@ class MainWindow(QMainWindow):
 
     def _on_stats(self, info: dict) -> None:
         self.circuit_panel.set_rates(info)
+        try:
+            self.fly_kb.set_state(
+                pain=float(info.get("pain", 0)),
+                lock_in=bool(info.get("lock_in") or info.get("combat_mode") == "fight"),
+            )
+        except Exception:
+            pass
         self.stats_lbl.setText(
             f"t={info.get('t_ms',0):.0f}ms steps={info.get('steps',0)}\n"
             f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
@@ -402,10 +471,11 @@ class MainWindow(QMainWindow):
             f"mode={info.get('combat_mode','?')} hero={info.get('char_label',info.get('character','?'))}\n"
             f"weak={info.get('weakness',0):.2f} hits={info.get('hits',0)} train={self.worker.trainer.samples}\n"
             f"rail={info.get('rail_score',0):.2f} portal={info.get('portal_score',0):.2f}\n"
-            f"lock={'ON' if input_lock.is_locked() else 'off'}"
+            f"lock={'ON' if input_lock.is_locked() else 'off'} learn={self.worker.trainer.imit_samples}"
         )
 
     def closeEvent(self, e) -> None:
+        host_learn.stop()
         input_lock.unlock()
         self.worker.stop()
         self.worker.wait(4000)
