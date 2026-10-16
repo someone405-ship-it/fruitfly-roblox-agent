@@ -1,4 +1,4 @@
-"""Autonomy + kill loot + death hurt + power unlock."""
+"""Autonomy + kill loot + death hurt + PORTAL BEFORE COMBAT."""
 from __future__ import annotations
 from typing import Dict, Any, List
 import time
@@ -11,17 +11,17 @@ from .loot import KillLootSystem
 CHAR_KITS: Dict[str, Dict[str, Any]] = {
     "deadpool": {
         "label": "Deadpool", "q": "Immortal Dash", "e": "Air Slash", "r": "Deadpool Combo",
-        "q_gap": 1.6, "e_gap": 1.3, "r_gap": 2.4, "aggro": 0.95, "dodge_bias": 0.85, "melee": 0.85,
+        "q_gap": 1.4, "e_gap": 1.1, "r_gap": 2.1, "aggro": 0.95, "dodge_bias": 0.85, "melee": 0.85,
         "say_pick": "Deadpool. messy and fast.",
     },
     "batman": {
         "label": "Batman", "q": "Grapple", "e": "Batarang", "r": "Smoke Bomb",
-        "q_gap": 1.5, "e_gap": 1.2, "r_gap": 2.8, "aggro": 0.7, "dodge_bias": 1.1, "melee": 0.7,
+        "q_gap": 1.3, "e_gap": 1.0, "r_gap": 2.4, "aggro": 0.7, "dodge_bias": 1.1, "melee": 0.7,
         "say_pick": "Batman. quiet and precise.",
     },
     "war_machine": {
         "label": "War Machine", "q": "Jet Boost", "e": "Missile", "r": "Heavy Barrage",
-        "q_gap": 1.5, "e_gap": 1.4, "r_gap": 2.2, "aggro": 1.1, "dodge_bias": 0.7, "melee": 0.9,
+        "q_gap": 1.3, "e_gap": 1.2, "r_gap": 2.0, "aggro": 1.1, "dodge_bias": 0.7, "melee": 0.9,
         "say_pick": "War Machine. heavy pressure.",
     },
 }
@@ -63,10 +63,11 @@ class BehaviorLayer:
         self.lock_in = False
         self.kit = CHAR_KITS[self.character]
         self.goal = "explore"
-        self.features_active = 68
+        self.features_active = 80
         self._last_kill_at = 0.0
         self._last_death_at = 0.0
         self._pending_kill_notes: List[str] = []
+        self._portal_seek_streak = 0
 
     def _apply_char(self, name: str) -> None:
         if name not in CHAR_KITS:
@@ -98,7 +99,7 @@ class BehaviorLayer:
 
     def _say(self, line: str) -> None:
         now = time.time()
-        if now - self._last_say < 1.4 and self.pending_line:
+        if now - self._last_say < 1.2 and self.pending_line:
             return
         self.pending_line = line
         self._last_say = now
@@ -118,6 +119,11 @@ class BehaviorLayer:
     def _zero_junk(self, m):
         for n in ("chat_toggle", "ui_up", "ui_down", "ui_select", "emote", "crouch"):
             m[self.idx[n]] = 0.0
+
+    def _zero_combat(self, m):
+        """Block fight motors until portal is done."""
+        m[self.idx["secondary"]] = 0.0
+        self._zero_kit(m)
 
     def _fire(self, m, name: str) -> None:
         m[self.idx[name]] = 0.95
@@ -139,18 +145,18 @@ class BehaviorLayer:
             elif i == 1: self.cd_e = now + gaps[1]
             else: self.cd_r = now + gaps[2]
             self._rot = (i + 1) % 3
-            self._next_rot_at = now + 0.4
+            self._next_rot_at = now + 0.32
         return notes
 
     def _steer(self, m, cx: float, strength: float = 0.7) -> None:
         err = cx - 0.5
-        if err > 0.05:
-            m[self.idx["right"]] += strength * min(1.0, err * 3.2)
-            m[self.idx["look_right"]] += 0.85 * min(1.0, err * 3.5)
+        if err > 0.04:
+            m[self.idx["right"]] += strength * min(1.0, err * 3.5)
+            m[self.idx["look_right"]] += 0.95 * min(1.0, err * 3.8)
             m[self.idx["left"]] = 0.0
-        elif err < -0.05:
-            m[self.idx["left"]] += strength * min(1.0, -err * 3.2)
-            m[self.idx["look_left"]] += 0.85 * min(1.0, -err * 3.5)
+        elif err < -0.04:
+            m[self.idx["left"]] += strength * min(1.0, -err * 3.5)
+            m[self.idx["look_left"]] += 0.95 * min(1.0, -err * 3.8)
             m[self.idx["right"]] = 0.0
 
     def _predict_and_dodge(self, m, meta, now):
@@ -167,7 +173,7 @@ class BehaviorLayer:
             return notes
         dm = self._hist_motion[-1] - self._hist_motion[0]
         pred = loom * 0.5 + threat * 0.4 + max(0.0, dm) * 2.0
-        if pred * float(self.kit.get("dodge_bias", 1.0)) < 0.3 or now - self._last_dodge < 0.32:
+        if pred * float(self.kit.get("dodge_bias", 1.0)) < 0.3 or now - self._last_dodge < 0.28:
             return notes
         self._last_dodge = now
         side = 1.0 if (self._hist_cx[-1] - self._hist_cx[0]) >= 0 else -1.0
@@ -203,6 +209,14 @@ class BehaviorLayer:
         portal_cx = float(meta.get("portal_cx", 0.5))
         kill_event = bool(meta.get("kill_event", False))
         death_event = bool(meta.get("death_event", False))
+        portal_passed = bool(meta.get("portal_passed", False))
+        portal_event = bool(meta.get("portal_event", False))
+
+        if portal_passed or portal_event:
+            self.instinct.in_arena = True
+            self.instinct.portal_locked_until = now + 90.0
+            self._say("portal — entering arena.")
+            self.instinct.reward_goal("portal", True)
 
         if kill_event and (now - self._last_kill_at) > 1.2:
             self._last_kill_at = now
@@ -241,9 +255,11 @@ class BehaviorLayer:
             self.instinct.confidence = max(0.1, self.instinct.confidence - 0.08)
             self.mode = "flee"
             self._flee_until = now + 1.2
+            # death often dumps back to lobby — require portal again
+            self.instinct.in_arena = False
 
         hit = max(0.0, loom - 0.48) + max(0.0, threat - 0.38)
-        if hit > 0:
+        if hit > 0 and self.instinct.in_arena:
             self.pain = min(1.0, self.pain + hit * 0.5)
             self.anger = min(1.0, self.anger + hit * 0.42)
             self.weakness = min(1.0, self.weakness + hit * 0.22)
@@ -263,86 +279,127 @@ class BehaviorLayer:
             notes += self._pending_kill_notes
             self._pending_kill_notes = []
 
+        in_arena = bool(self.instinct.in_arena)
+        notes.append("in_arena" if in_arena else "need_portal")
+
         goal = self.instinct.pick_goal(meta, self.pain, self.anger, self.mode)
-        if lobby > 0.5 and threat < 0.4 and portal < 0.2:
+
+        # HARD PORTAL GATE — override any fight urge outside arena
+        if not in_arena:
+            if portal > 0.08:
+                goal = "portal"
+            elif lobby > 0.4:
+                goal = "browse"
+            elif rail > 0.25:
+                goal = "rail"
+            else:
+                goal = "explore" if goal in ("fight", "hunt", "patrol") else goal
+            self._zero_combat(m)
+
+        if lobby > 0.5 and threat < 0.25 and portal < 0.15 and not in_arena:
             goal = "browse"
-        elif portal > 0.2 and goal in ("explore", "wander", "portal", "rail", "browse"):
+        elif portal > 0.12 and not in_arena:
             goal = "portal"
-        elif rail > 0.2 and goal in ("explore", "wander", "rail") and portal < 0.2:
-            goal = "rail"
+
         self.goal = goal
         notes.append(f"goal:{goal}")
 
         allow_ui = False
         if goal == "portal":
             self.mode = "portal"
-            m[self.idx["forward"]] = 0.95
-            m[self.idx["sprint"]] = 0.65
-            self._steer(m, portal_cx, 1.0)
-            self._zero_kit(m)
-            notes += ["seek_portal"]
+            self._portal_seek_streak += 1
+            m[self.idx["forward"]] = 0.98
+            m[self.idx["sprint"]] = 0.75
+            self._steer(m, portal_cx, 1.15)
+            # look at portal vertically a bit
+            pcy = float(meta.get("portal_cy", 0.5))
+            if pcy < 0.4:
+                m[self.idx["look_up"]] += 0.55
+            elif pcy > 0.65:
+                m[self.idx["look_down"]] += 0.45
+            m[self.idx["rmb_look"]] = 0.7
+            self._zero_combat(m)
+            notes += ["seek_portal", "portal_safe"]
+            if portal > 0.35:
+                notes.append("portal_close")
+                # slight jump into portal sometimes
+                if int(now * 4) % 5 == 0:
+                    m[self.idx["jump"]] = 0.7
         elif goal == "rail":
             self.mode = "rail"
-            m[self.idx["forward"]] = 0.9
-            m[self.idx["sprint"]] = 0.5
-            self._steer(m, rail_cx, 0.9)
-            self._zero_kit(m)
+            m[self.idx["forward"]] = 0.92
+            m[self.idx["sprint"]] = 0.55
+            self._steer(m, rail_cx, 0.95)
+            self._zero_combat(m)
             notes += ["rail"]
         elif goal == "flee" or water > 0.55 or (now < self._flee_until):
             self.mode = "flee"
             m[self.idx["forward"]] = 0.0
-            m[self.idx["back"]] = 0.7
-            m[self.idx["sprint"]] = 0.5
+            m[self.idx["back"]] = 0.75
+            m[self.idx["sprint"]] = 0.55
             if water > 0.4:
-                self._steer(m, 1.0 - float(meta.get("water_cx", 0.5)), 0.8)
+                self._steer(m, 1.0 - float(meta.get("water_cx", 0.5)), 0.85)
                 notes += ["water_death"]
             notes += ["flee"]
             self._zero_kit(m)
-        elif goal in ("fight", "hunt") or (self.pain > 0.35 and threat > 0.25):
+        elif goal in ("fight", "hunt") and in_arena:
             self.mode = "fight"
             self.lock_in = True
-            push = (0.85 + 0.4 * self.anger) * max(float(self.kit["aggro"]), 0.9)
+            self._portal_seek_streak = 0
+            push = (0.88 + 0.4 * self.anger) * max(float(self.kit["aggro"]), 0.9)
             m[self.idx["forward"]] = min(1.0, push)
-            m[self.idx["sprint"]] = min(1.0, 0.65 + 0.25 * self.anger)
-            m[self.idx["secondary"]] = max(float(self.kit["melee"]), 0.85)
+            m[self.idx["sprint"]] = min(1.0, 0.7 + 0.25 * self.anger)
+            m[self.idx["secondary"]] = max(float(self.kit["melee"]), 0.88)
             if threat > 0.3:
-                if int(now * 2) % 2 == 0:
-                    m[self.idx["left"]] += 0.35
+                if int(now * 3) % 2 == 0:
+                    m[self.idx["left"]] += 0.4
                 else:
-                    m[self.idx["right"]] += 0.35
+                    m[self.idx["right"]] += 0.4
+            m[self.idx["rmb_look"]] = 0.55
             notes += ["fight", "attack", "lock_in"]
             notes += self._kit(m, now, True)
             notes += self._predict_and_dodge(m, meta, now)
-        elif goal in ("browse", "rejoin") or lobby > 0.55:
+        elif goal in ("browse", "rejoin") or (lobby > 0.55 and not in_arena):
             self.mode = "browse"
             allow_ui = True
-            m[self.idx["forward"]] = 0.15
-            phase = int((now * 1.2) % 6)
-            self._zero_kit(m)
+            m[self.idx["forward"]] = 0.12
+            phase = int((now * 1.4) % 6)
+            self._zero_combat(m)
             if phase in (0, 1):
                 m[self.idx["ui_down"]] = 0.9; notes.append("ui_scroll")
             elif phase == 3:
                 m[self.idx["ui_select"]] = 0.9; notes.append("ui_select")
             notes += ["browse", "join_intent"]
         elif goal == "parkour":
-            m[self.idx["forward"]] = 0.85
-            m[self.idx["sprint"]] = 0.7
-            m[self.idx["jump"]] = 0.75 if int(now * 3) % 3 == 0 else 0.1
+            m[self.idx["forward"]] = 0.88
+            m[self.idx["sprint"]] = 0.75
+            m[self.idx["jump"]] = 0.8 if int(now * 4) % 3 == 0 else 0.1
             notes += ["parkour"]
-            self._zero_kit(m)
+            if not in_arena:
+                self._zero_combat(m)
         else:
             self.mode = "explore"
-            m[self.idx["forward"]] = 0.75 + 0.15 * self.curiosity
-            m[self.idx["sprint"]] = 0.45
-            notes += ["explore", "wander"]
-            self._zero_kit(m)
+            m[self.idx["forward"]] = 0.78 + 0.15 * self.curiosity
+            m[self.idx["sprint"]] = 0.5
+            # wander look while seeking portal path
+            if not in_arena:
+                lx, ly = self.instinct.look_wander()
+                if lx > 0:
+                    m[self.idx["look_right"]] += abs(lx)
+                else:
+                    m[self.idx["look_left"]] += abs(lx)
+                m[self.idx["rmb_look"]] = 0.45
+                self._zero_combat(m)
+                notes += ["explore", "wander", "hunting_portal"]
+            else:
+                notes += ["explore", "wander"]
 
         buffs = self.loot.active_buffs(now)
         if buffs["speed"] > 0:
             m[self.idx["sprint"]] = min(1.0, float(m[self.idx["sprint"]]) + 0.35)
             m[self.idx["forward"]] = min(1.0, float(m[self.idx["forward"]]) + 0.12)
             notes.append("buff_speed")
-        if buffs["rage"] > 0:
+        if buffs["rage"] > 0 and in_arena:
             m[self.idx["secondary"]] = min(1.0, max(float(m[self.idx["secondary"]]), 0.9))
             notes.append("buff_rage")
         if buffs["shield"] > 0:
@@ -357,15 +414,16 @@ class BehaviorLayer:
         power_mult = 1.0
         power_name = "dormant"
         for need, mult, name in ((0, 1.0, "dormant"), (3, 1.08, "awake"), (8, 1.16, "charged"),
-                                  (15, 1.28, "ascendant"), (25, 1.42, "unlocked")):
+                                  (15, 1.28, "ascendant"), (25, 1.42, "unlocked"), (40, 1.55, "ascended")):
             if kills >= need:
                 power_mult, power_name = mult, name
-        if power_mult > 1.0:
+        if power_mult > 1.0 and in_arena:
             for ch in ("forward", "sprint", "secondary", "look_left", "look_right"):
                 m[self.idx[ch]] = float(np.clip(m[self.idx[ch]] * power_mult, -1.5, 1.5))
             notes.append(f"power:{power_name}")
 
-        self._danger_now = max(threat, loom * 0.9) > 0.4
+        # danger only when truly threatening AND not looking at a portal
+        self._danger_now = max(threat, loom * 0.9) > 0.45 and portal < 0.2 and in_arena
         if self._danger_now:
             notes.append("danger")
 
@@ -386,8 +444,8 @@ class BehaviorLayer:
             "char_label": self.kit["label"], "rot": self._rot,
             "hits": self._hits, "lock_in": self.lock_in, "goal": self.goal,
             "features": self.features_active, "power": power_name, "power_mult": power_mult,
-            "deaths": self._deaths,
-            **{f"drv_{k}": v for k, v in snap.items() if isinstance(v, (int, float))},
+            "deaths": self._deaths, "in_arena": in_arena,
+            **{f"drv_{k}": v for k, v in snap.items() if isinstance(v, (int, float, bool))},
             **{f"loot_{k}": v for k, v in self.loot.snapshot().items() if isinstance(v, (int, float, str))},
         }
         return np.clip(m, -1, 1), notes, info

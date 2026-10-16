@@ -1,4 +1,4 @@
-"""LIF reservoir brain — power-iteration spectral radius, 8192 units."""
+"""LIF reservoir brain — 12288 units, power-iteration spectral radius."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Tuple
@@ -9,8 +9,7 @@ from .config import (
 )
 
 
-def _spectral_radius_estimate(W: np.ndarray, iters: int = 40) -> float:
-    """Power iteration — avoids full eigvalsh hang on large matrices."""
+def _spectral_radius_estimate(W: np.ndarray, iters: int = 35) -> float:
     n = W.shape[0]
     if n == 0:
         return 0.0
@@ -28,7 +27,7 @@ class FruitFlyBrain:
     def __init__(self, seed: int = 0) -> None:
         self.rng = np.random.default_rng(seed)
         rng = self.rng
-        self.W_in = rng.normal(0.0, 0.35, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
+        self.W_in = rng.normal(0.0, 0.32, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
         W = rng.normal(0.0, 1.0, size=(N_HIDDEN, N_HIDDEN)).astype(np.float32)
         W *= (rng.random(W.shape) < SPARSITY).astype(np.float32)
         signs = np.where(rng.random(N_HIDDEN) < 0.5, 1.0, -1.0).astype(np.float32)
@@ -37,7 +36,7 @@ class FruitFlyBrain:
         if radius > 1e-6:
             W *= np.float32(SPECTRAL_RADIUS / radius)
         self.W_rec = W
-        self.W_out = rng.normal(0.0, 0.22, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
+        self.W_out = rng.normal(0.0, 0.20, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
         self.v = np.zeros(N_HIDDEN, dtype=np.float32)
         self.v_slow = np.zeros(N_HIDDEN, dtype=np.float32)
         self.spikes = np.zeros(N_HIDDEN, dtype=np.float32)
@@ -63,7 +62,7 @@ class FruitFlyBrain:
             out[:n] = s[:n]
             s = out
         I = self.W_in @ s + self.W_rec @ (self.spikes * self.gain)
-        I += 0.15 * self.v_slow
+        I += 0.14 * self.v_slow
         I += NOISE_SCALE * self.rng.standard_normal(N_HIDDEN).astype(np.float32)
         self.v += (-self.v + I) * (DT_MS / TAU_MEM)
         self.v_slow += (-self.v_slow + self.v) * (DT_MS / TAU_SLOW)
@@ -73,8 +72,8 @@ class FruitFlyBrain:
         n_sp = int(self.spikes.sum())
         self.total_spikes += n_sp
         self.steps += 1
-        self.rate = 0.82 * self.rate + 0.18 * self.spikes
-        self.rate_slow = 0.97 * self.rate_slow + 0.03 * self.spikes
+        self.rate = 0.80 * self.rate + 0.20 * self.spikes
+        self.rate_slow = 0.96 * self.rate_slow + 0.04 * self.spikes
         self.gain *= 1.0 + 0.002 * (0.05 - self.rate_slow)
         np.clip(self.gain, 0.5, 2.0, out=self.gain)
         motor = self.W_out @ (0.7 * self.rate + 0.3 * self.rate_slow)
@@ -93,7 +92,7 @@ class FruitFlyBrain:
         }
         return motor, info
 
-    def decide(self, motor: np.ndarray, threshold: float = 0.18) -> list:
+    def decide(self, motor: np.ndarray, threshold: float = 0.16) -> list:
         active = [MOTOR_NAMES[i] for i in range(min(len(MOTOR_NAMES), motor.size)) if motor[i] > threshold]
         pairs = [("forward", "back"), ("left", "right"), ("look_left", "look_right"), ("look_up", "look_down")]
         name_to_i = {n: i for i, n in enumerate(MOTOR_NAMES)}
