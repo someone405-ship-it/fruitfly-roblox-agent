@@ -1,4 +1,4 @@
-"""Online training — imitation (learn from host) + reward shaping."""
+"""Online training — imitation + reward shaping + kill loot."""
 from __future__ import annotations
 import numpy as np
 from typing import Dict, List
@@ -77,13 +77,25 @@ class Trainer:
             r += 0.3
         if "food_seen" in notes:
             r += 0.1
+        if "kill" in notes:
+            r += 1.0
+        if any(n.startswith("loot:") for n in notes):
+            r += 0.4
+        if "eat_food" in notes:
+            r += 0.2
         if float(meta.get("threat_score", 0)) > 0.4 and ("fight" in notes or "attack" in notes):
             r += 0.3
         if float(meta.get("threat_score", 0)) > 0.5 and "flee" in notes:
             r += 0.15
-        if "leave_lobby" in notes:
+        if "leave_lobby" in notes or "browse" in notes:
+            r += 0.2
+        if "parkour" in notes:
             r += 0.15
-        return float(np.clip(r, -1.5, 1.5))
+        if "patrol" in notes:
+            r += 0.1
+        if any(n.startswith("goal:") for n in notes):
+            r += 0.05
+        return float(np.clip(r, -1.5, 2.0))
 
     def step_reward(self, reward: float) -> None:
         if not self.enabled:
