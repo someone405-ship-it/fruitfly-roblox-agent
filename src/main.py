@@ -1,9 +1,4 @@
-"""FruitFly Roblox Agent — production main.
-
-Setup gate → START/STOP appear when ready.
-START: fly controls Roblox, watch-only lock on Roblox focus.
-STOP / F9: pause + unlock.
-"""
+"""FruitFly Roblox Agent — fixed mouse, Roblox-only vision, instincts."""
 from __future__ import annotations
 import sys
 import time
@@ -15,7 +10,7 @@ from PyQt6.QtWidgets import (
 )
 from .config import (
     WINDOW_W, WINDOW_H, BG_DEEP, BG_PANEL, BG_CARD, ACCENT,
-    TEXT_PRIMARY, TEXT_SECONDARY, BORDER, DANGER, SUCCESS, WEIGHTS_PATH,
+    TEXT_PRIMARY, TEXT_SECONDARY, BORDER, DANGER, SUCCESS, WEIGHTS_PATH, MOTOR_NAMES,
 )
 from .brain import FruitFlyBrain
 from .vision import VisionEncoder
@@ -26,6 +21,7 @@ from .logger import ActionLogger
 from .roblox_launcher import launch_roblox, is_roblox_running, find_roblox_player
 from .trainer import Trainer
 from .motor_panel import MotorOutputPanel
+from .behavior import BehaviorLayer
 from . import input_lock
 
 
@@ -48,11 +44,18 @@ class AgentWorker(QThread):
         self.motor = MotorController()
         self.logger = ActionLogger()
         self.trainer = Trainer(self.brain)
+        self.behavior = BehaviorLayer()
         self.auto_focus = True
+        try:
+            self.trainer.bootstrap_explore(180)
+        except Exception:
+            pass
 
     def run(self) -> None:
         self._running = True
         self.log_ready.emit("brain online")
+        if self.trainer.samples:
+            self.log_ready.emit(f"pre-train samples={self.trainer.samples}")
         self.worker_ready.emit()
         while self._running:
             if self._paused:
@@ -60,20 +63,31 @@ class AgentWorker(QThread):
                 continue
             t0 = time.perf_counter()
             try:
-                if self.auto_focus and self.brain.steps % 25 == 0:
+                if self.auto_focus and self.brain.steps % 30 == 0:
                     self.motor.focus_roblox()
                 frame = self.vision.capture()
                 sensory = self.vision.encode(frame)
                 motor, info = self.brain.step(sensory)
-                actions = self.brain.decide(motor, threshold=0.20)
+                motor, notes, binfo = self.behavior.modulate(motor, self.vision.last_meta)
+                info.update(binfo)
+                actions = self.brain.decide(motor, threshold=0.38)
+                actions = [a for a in actions if not a.startswith("look_")]
                 sent = self.motor.apply(actions, motor.tolist())
+                chat = self.behavior.take_chat()
+                if chat:
+                    self.motor.type_text(chat)
+                    sent.append(f'chat:"{chat}"')
+                    self.log_ready.emit(f"instinct chat -> {chat}")
                 self.frame_ready.emit(frame)
                 self.actions_ready.emit(actions)
                 self.stats_ready.emit(info)
-                self.motor_ready.emit(info.get("motor", {}), actions)
+                self.motor_ready.emit({n: float(motor[i]) for i, n in enumerate(MOTOR_NAMES)}, actions)
                 if sent:
-                    self.log_ready.emit(f"-> {', '.join(sent)} | spk={info['n_spikes']}")
-                self.status_ready.emit("WATCH ONLY — fly controlling Roblox")
+                    tag = ",".join(notes) if notes else ""
+                    self.log_ready.emit(f"-> {', '.join(sent)} | {tag} | spk={info['n_spikes']}")
+                self.status_ready.emit(
+                    f"WATCH ONLY — fear={binfo.get('fear',0):.2f} hunger={binfo.get('hunger',0):.2f}"
+                )
             except Exception as e:
                 self.log_ready.emit(f"error: {e}")
             dt = (time.perf_counter() - t0) * 1000.0
@@ -91,10 +105,7 @@ class AgentWorker(QThread):
         self.motor.focus_roblox()
         ok = input_lock.lock()
         self._paused = False
-        self.log_ready.emit(
-            "START — watch only (Roblox input blocked)" if ok
-            else "START — fly on (input lock not available)"
-        )
+        self.log_ready.emit("START — watch only" if ok else "START — fly on (no lock)")
 
     def stop_fly(self) -> None:
         self._paused = True
@@ -229,7 +240,6 @@ class MainWindow(QMainWindow):
         self._roblox_ok = bool(ok) or is_roblox_running()
         if not self._roblox_ok:
             self.setup_lbl.setText("Waiting for Roblox… open Roblox once if needed")
-            self.status.showMessage("waiting for Roblox…")
             QTimer.singleShot(2500, self._recheck_roblox)
             return
         self._try_finish_setup()
@@ -266,15 +276,13 @@ class MainWindow(QMainWindow):
         if not self._setup_done or self._flying:
             return
         if not is_roblox_running():
-            self.log_view.append("Roblox closed — relaunching…")
             launch_roblox(6.0)
         self.worker.start_fly()
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — Roblox input blocked while focused. STOP or F9 to unlock.")
+        self.watch_lbl.setText("WATCH ONLY — click this app then STOP/F9 to unlock. Keep Roblox visible.")
         self.watch_lbl.setVisible(True)
-        self.status.showMessage("running — watch only")
 
     def _on_stop(self) -> None:
         if not self._flying:
@@ -284,7 +292,6 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.watch_lbl.setVisible(False)
-        self.status.showMessage("stopped")
 
     def _on_emergency(self) -> None:
         self.worker.emergency()
@@ -314,10 +321,10 @@ class MainWindow(QMainWindow):
 
     def _on_stats(self, info: dict) -> None:
         self.stats_lbl.setText(
-            f"t={info['t_ms']:.0f} ms  steps={info.get('steps', 0)}\n"
-            f"spikes={info['n_spikes']}  total={info.get('total_spikes', 0)}\n"
-            f"rate={info['mean_rate']:.4f}\n"
-            f"lock={'ON' if input_lock.is_locked() else 'off'}"
+            f"t={info.get('t_ms',0):.0f}ms steps={info.get('steps',0)}\n"
+            f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
+            f"fear={info.get('fear',0):.2f} hunger={info.get('hunger',0):.2f}\n"
+            f"food={info.get('food_score',0):.2f} lock={'ON' if input_lock.is_locked() else 'off'}"
         )
 
     def closeEvent(self, e) -> None:
