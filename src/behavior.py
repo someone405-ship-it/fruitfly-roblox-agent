@@ -11,8 +11,8 @@ class BehaviorLayer:
         self.fear = 0.0
         self.curiosity = 0.7
         self.arousal = 0.5
-        self.pending_chat: Optional[str] = None
-        self.pending_line: Optional[str] = None
+        self.pending_chat = None
+        self.pending_line = None
         self.idx = {n: i for i, n in enumerate(MOTOR_NAMES)}
         self.manual_scare = False
         self._food_seen = False
@@ -28,6 +28,7 @@ class BehaviorLayer:
         self.e_gap = 2.4
         self.r_gap = 4.5
         self._rot = 0
+        self._next_rot_at = 0.0
         self.character = "deadpool"
         self._last_say = 0.0
 
@@ -45,22 +46,22 @@ class BehaviorLayer:
         self.pending_line = line
         self._last_say = now
 
-    def take_line(self) -> Optional[str]:
+    def take_line(self):
         line = self.pending_line
         self.pending_line = None
         return line
 
-    def _zero_kit(self, m: np.ndarray) -> None:
+    def _zero_kit(self, m):
         for name in ("interact", "reset", "camera"):
             m[self.idx[name]] = 0.0
 
-    def _fire(self, m: np.ndarray, name: str) -> None:
+    def _fire(self, m, name: str) -> None:
         m[self.idx[name]] = 0.95
 
-    def _kit(self, m: np.ndarray, now: float, fighting: bool) -> list:
+    def _kit(self, m, now: float, fighting: bool):
         notes = []
         self._zero_kit(m)
-        if not fighting:
+        if not fighting or now < self._next_rot_at:
             return notes
         order = ("camera", "interact", "reset")
         tags = ("q_dash", "e_slash", "r_combo")
@@ -80,9 +81,10 @@ class BehaviorLayer:
                 self.cd_r = now + gaps[2]
                 self._say("R — combo. that's the finisher, not a reset.")
             self._rot = (i + 1) % 3
+            self._next_rot_at = now + 0.9
         return notes
 
-    def _steer(self, m: np.ndarray, cx: float, strength: float = 0.7) -> None:
+    def _steer(self, m, cx: float, strength: float = 0.7) -> None:
         err = cx - 0.5
         if err > 0.06:
             m[self.idx["right"]] += strength * min(1.0, err * 3)
@@ -103,7 +105,6 @@ class BehaviorLayer:
             cb = np.asarray(circuit_bias, dtype=np.float32).ravel()
             n = min(N_MOTOR, cb.size)
             m[:n] = 0.35 * m[:n] + 0.65 * cb[:n]
-
         now = time.time()
         motion = float(meta.get("motion", 0.0))
         food = float(meta.get("food_score", 0.0))
@@ -115,20 +116,16 @@ class BehaviorLayer:
         rail_cx = float(meta.get("rail_cx", 0.5))
         portal = float(meta.get("portal_score", 0.0))
         portal_cx = float(meta.get("portal_cx", 0.5))
-
         if water > 0.35:
             self.mode = "flee"
             m[self.idx["forward"]] -= 1.2
             m[self.idx["back"]] += 1.0
             m[self.idx["jump"]] += 0.55
-            wx = float(meta.get("water_cx", 0.5))
-            self._steer(m, 1.0 - wx, 0.8)
+            self._steer(m, 1.0 - float(meta.get("water_cx", 0.5)), 0.8)
             self._zero_kit(m)
             notes = ["water_death"]
             self._say("water. that's death. I'm not walking in.")
-            m = np.clip(m, -1.0, 1.0)
-            return m, notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
-
+            return np.clip(m, -1, 1), notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
         if lobby > 0.45 and portal < 0.25:
             self.mode = "rail"
             m[self.idx["forward"]] += 0.55
@@ -136,9 +133,7 @@ class BehaviorLayer:
             self._zero_kit(m)
             notes = ["leave_lobby"]
             self._say("lobby is outside. I'm not staying.")
-            m = np.clip(m, -1.0, 1.0)
-            return m, notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
-
+            return np.clip(m, -1, 1), notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
         if portal > 0.28:
             self.mode = "portal"
             m[self.idx["forward"]] += 0.75
@@ -147,9 +142,7 @@ class BehaviorLayer:
             self._zero_kit(m)
             notes = ["seek_portal"]
             self._say("portal. combat world's through that. staying on it.")
-            m = np.clip(m, -1.0, 1.0)
-            return m, notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
-
+            return np.clip(m, -1, 1), notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
         if self.manual_scare:
             self.fear = 0.95
             self.manual_scare = False
@@ -163,7 +156,6 @@ class BehaviorLayer:
                 self._say("danger. I run, then I turn around and fight.")
         else:
             self.fear = max(0.0, self.fear - 0.08)
-
         if self.mode == "flee" and now >= self._flee_until:
             self.mode = "fight"
             self._fight_until = now + self.fight_seconds
@@ -171,7 +163,6 @@ class BehaviorLayer:
             self._say("back in. Q, then E, then R. that's the whole kit.")
         if self.mode == "fight" and now >= self._fight_until:
             self.mode = "rail" if rail > 0.2 else "explore"
-
         fighting = self.mode == "fight"
         if self.mode == "flee":
             m[self.idx["forward"]] -= 0.7
@@ -199,7 +190,6 @@ class BehaviorLayer:
             m[self.idx["forward"]] += 0.42 * self.curiosity
             m[self.idx["sprint"]] += 0.08
             self._zero_kit(m)
-
         if food > 0.5 and not fighting:
             notes.append("food_seen")
             if not self._food_seen:
@@ -209,14 +199,11 @@ class BehaviorLayer:
             self._food_seen = True
         else:
             self._food_seen = False
-
         for name in ("chat_toggle", "ui_up", "ui_down", "ui_select", "emote"):
             if name == "chat_toggle" and self.pending_chat:
                 continue
             m[self.idx[name]] = min(float(m[self.idx[name]]), 0.05)
-
-        m = np.clip(m, -1.0, 1.0)
-        return m, notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
+        return np.clip(m, -1, 1), notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
 
     def _info(self, notes, food, motion, loom, water, lobby, threat, rail, portal):
         return {
