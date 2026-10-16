@@ -1,4 +1,4 @@
-"""Vision — Roblox only (no agent mirror), fruit HSV food, loom."""
+"""Vision — Roblox only, fruit food, water/lobby/threat scores."""
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -72,7 +72,8 @@ class VisionEncoder:
             cv2.putText(frame, "NO ROBLOX WINDOW", (40, CAPTURE_H // 2),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 180, 255), 2)
             self.last_frame = frame
-            self.last_meta = {"motion": 0, "food_score": 0, "loom_score": 0, "no_roblox": True}
+            self.last_meta = {"motion": 0, "food_score": 0, "loom_score": 0, "no_roblox": True,
+                              "water_score": 0, "lobby_score": 0, "threat_score": 0}
             return frame
         self.last_region = region
         try:
@@ -145,6 +146,7 @@ class VisionEncoder:
         else:
             vec = vec[:N_SENSORY]
         np.clip(vec, 0.0, 1.0, out=vec)
+
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask_y = cv2.inRange(hsv, (18, 80, 80), (40, 255, 255))
         mask_r1 = cv2.inRange(hsv, (0, 90, 70), (12, 255, 255))
@@ -155,6 +157,7 @@ class VisionEncoder:
         food_score = 0.0
         if 0.004 < food_ratio < 0.25:
             food_score = min(1.0, food_ratio * 12.0)
+
         y0, y1 = max(0, cy0 - 40), min(CAPTURE_H, cy0 + 40)
         x0, x1 = max(0, cx0 - 50), min(CAPTURE_W, cx0 + 50)
         center_patch = gray[y0:y1, x0:x1]
@@ -164,10 +167,37 @@ class VisionEncoder:
             center_motion = 0.0
         center_dark = float(np.mean(center_patch < 0.35))
         loom_score = float(np.clip(center_motion * 4.0 + center_dark * 0.5, 0.0, 1.0))
+
+        water_mask = cv2.inRange(hsv, (90, 60, 40), (130, 255, 255))
+        water_ratio = float(np.count_nonzero(water_mask)) / float(water_mask.size)
+        water_score = 0.0
+        water_cx = 0.5
+        if water_ratio > 0.12:
+            water_score = min(1.0, (water_ratio - 0.08) * 3.0)
+            ys, xs = np.where(water_mask > 0)
+            if len(xs) > 0:
+                water_cx = float(xs.mean()) / CAPTURE_W
+
+        border = np.concatenate([
+            gray[:12, :].ravel(), gray[-12:, :].ravel(),
+            gray[:, :12].ravel(), gray[:, -12:].ravel(),
+        ])
+        border_bright = float(np.mean(border > 0.7))
+        lobby_score = 0.0
+        if motion < 0.03 and border_bright > 0.15 and float(gray.mean()) > 0.25:
+            lobby_score = min(1.0, border_bright * 2.0 + (0.04 - motion) * 8.0)
+
+        red1 = cv2.inRange(hsv, (0, 100, 80), (12, 255, 255))
+        red2 = cv2.inRange(hsv, (165, 100, 80), (180, 255, 255))
+        red_ratio = float(np.count_nonzero(cv2.bitwise_or(red1, red2))) / float(frame.shape[0] * frame.shape[1])
+        threat_score = float(np.clip(center_motion * 3.5 + red_ratio * 8.0 + loom_score * 0.5, 0.0, 1.0))
+
         self.last_meta = {
             "motion": motion, "food_score": food_score, "brightness": float(gray.mean()),
             "edge": edge, "center_bright": center, "loom_score": loom_score,
             "no_roblox": False, "window_title": self._last_title,
+            "water_score": water_score, "water_cx": water_cx,
+            "lobby_score": lobby_score, "threat_score": threat_score,
         }
         return vec
 
