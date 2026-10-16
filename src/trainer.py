@@ -164,12 +164,10 @@ class Trainer:
         actions: Optional[List[str]] = None,
     ) -> None:
         acts = actions if actions is not None else self._last_actions
-        # death / water
         if "water_death" in notes or float(meta.get("death_event", 0)):
             kind = "water_death" if "water_death" in notes else "death"
             self.mistakes.record(kind, notes, meta, motor, acts)
             self.last_mistake_msg = f"learned mistake:{kind}"
-            # strong negative update so weights also shift
             self.step_reward(-1.2)
         elif "need_portal" in notes and ("fight" in notes or "attack" in notes):
             self.mistakes.record("fight_before_portal", notes, meta, motor, acts)
@@ -200,7 +198,6 @@ class Trainer:
         meta: dict,
         actions: List[str],
     ) -> tuple:
-        """Return (motor, actions, banned_set) after mistake avoidance."""
         m = motor.astype(np.float32).copy()
         if m.size < N_MOTOR:
             pad = np.zeros(N_MOTOR, dtype=np.float32)
@@ -218,10 +215,13 @@ class Trainer:
         acts = [a for a in actions if a not in banned]
         for p in prefer:
             if p not in acts and p not in banned:
-                # soft prefer — only add movement prefs
                 if p in ("back", "left", "right", "forward", "sprint", "jump", "rmb_look"):
                     acts.append(p)
         self._last_actions = list(acts)
+        try:
+            self.mistakes.publish_runtime(meta, notes)
+        except Exception:
+            pass
         return m, acts, banned
 
     def online_step(
@@ -241,7 +241,6 @@ class Trainer:
             if sensory is not None and self.eye.count > 8:
                 eye_b = self.eye.nearest_target(sensory, k=4)
                 bias = 0.55 * bias + 0.45 * eye_b
-            # fold win/mistake into readout training
             avoid = self.mistakes.avoid_bias(meta, notes, strength=0.4)
             boost = self.wins.boost_bias(meta, notes, strength=0.25)
             bias = bias + boost + avoid
@@ -255,6 +254,10 @@ class Trainer:
 
         self._detect_and_record_mistakes(notes, meta, motor, actions)
         self._detect_and_record_wins(notes, meta, motor)
+        try:
+            self.mistakes.publish_runtime(meta, notes)
+        except Exception:
+            pass
 
         r = self.reward_from_notes(notes, meta, motor)
         self.step_reward(r)
