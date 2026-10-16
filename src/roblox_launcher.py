@@ -1,15 +1,17 @@
-"""Find, launch, and fully open Roblox Player on Windows."""
+"""Find, launch, maximize Roblox — long waits + many retries for high success rate."""
 from __future__ import annotations
 import os
 import time
 import subprocess
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Callable
 
 try:
     import psutil
 except ImportError:
     psutil = None
+
+from .config import SETUP_ROBLOX_WAIT_S, SETUP_ROBLOX_RETRIES, SETUP_RETRY_GAP_S, SETUP_MAXIMIZE_PASSES
 
 
 def _versions_dir() -> Optional[Path]:
@@ -55,13 +57,10 @@ def is_roblox_running() -> bool:
 
 
 def maximize_roblox_window() -> bool:
-    """Bring Roblox to foreground and maximize so the page is fully open."""
     try:
         import ctypes
         from ctypes import wintypes
         user32 = ctypes.windll.user32
-        SW_RESTORE = 9
-        SW_MAXIMIZE = 3
         found = []
 
         @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
@@ -82,11 +81,10 @@ def maximize_roblox_window() -> bool:
         if not found:
             return False
         hwnd = found[0]
-        user32.ShowWindow(hwnd, SW_RESTORE)
-        time.sleep(0.15)
-        user32.ShowWindow(hwnd, SW_MAXIMIZE)
+        user32.ShowWindow(hwnd, 9)   # restore
+        time.sleep(0.2)
+        user32.ShowWindow(hwnd, 3)   # maximize
         user32.SetForegroundWindow(hwnd)
-        # force top-level activation
         try:
             user32.BringWindowToTop(hwnd)
         except Exception:
@@ -96,26 +94,69 @@ def maximize_roblox_window() -> bool:
         return False
 
 
-def launch_roblox(wait_seconds: float = 6.0, maximize: bool = True) -> Tuple[bool, str]:
+def maximize_roblox_aggressive(passes: int = SETUP_MAXIMIZE_PASSES) -> bool:
+    ok = False
+    for i in range(max(1, passes)):
+        if maximize_roblox_window():
+            ok = True
+        time.sleep(0.35 + 0.15 * i)
+    return ok
+
+
+def launch_roblox(
+    wait_seconds: float = SETUP_ROBLOX_WAIT_S,
+    maximize: bool = True,
+    log: Optional[Callable[[str], None]] = None,
+) -> Tuple[bool, str]:
+    def _log(msg: str) -> None:
+        if log:
+            log(msg)
+
     if is_roblox_running():
         if maximize:
-            maximize_roblox_window()
+            maximize_roblox_aggressive()
         return True, "Roblox already running (maximized)" if maximize else "Roblox already running"
+
     path = find_roblox_player()
     if not path:
-        return False, "Roblox Player not found under %LOCALAPPDATA%\\Roblox\\Versions"
+        return False, "Roblox Player not found under %LOCALAPPDATA%\\Roblox\\Versions — install Roblox first"
+
     try:
         subprocess.Popen([path], shell=False)
+        _log(f"launched: {path}")
     except Exception as e:
         return False, f"failed to start Roblox: {e}"
-    deadline = time.time() + max(1.0, wait_seconds)
+
+    deadline = time.time() + max(5.0, wait_seconds)
+    attempt = 0
     while time.time() < deadline:
+        attempt += 1
         if is_roblox_running():
-            time.sleep(0.8)
+            _log(f"Roblox process seen (attempt {attempt})")
+            time.sleep(1.2)
             if maximize:
-                maximize_roblox_window()
+                maximize_roblox_aggressive()
+            # extra settle so window is fully open
+            time.sleep(1.5)
+            if maximize:
+                maximize_roblox_aggressive(passes=3)
             return True, f"Roblox launched + maximized: {path}"
-        time.sleep(0.4)
+        time.sleep(0.5)
+
+    # process may still be starting — keep retrying outside pure wait
+    for r in range(SETUP_ROBLOX_RETRIES):
+        _log(f"retry {r + 1}/{SETUP_ROBLOX_RETRIES} for Roblox window…")
+        if is_roblox_running():
+            if maximize:
+                maximize_roblox_aggressive()
+            time.sleep(1.0)
+            if maximize:
+                maximize_roblox_aggressive(passes=3)
+            return True, f"Roblox ready after retry {r + 1}: {path}"
+        time.sleep(SETUP_RETRY_GAP_S)
+
     if maximize:
-        maximize_roblox_window()
-    return True, f"Roblox start requested: {path} (window may still be loading)"
+        maximize_roblox_aggressive()
+    if is_roblox_running():
+        return True, f"Roblox process up (window may still load): {path}"
+    return False, f"Roblox did not become ready in {wait_seconds:.0f}s + retries — open Roblox manually then press START"

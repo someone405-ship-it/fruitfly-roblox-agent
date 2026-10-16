@@ -8,11 +8,13 @@ try:
     import pydirectinput
     pydirectinput.FAILSAFE = False
     pydirectinput.PAUSE = 0.0
-except ImportError:
+except ImportException:
+    pydirectinput = None
+except Exception:
     pydirectinput = None
 try:
     import pygetwindow as gw
-except ImportError:
+except Exception:
     gw = None
 
 from .config import LOOK_SENSITIVITY, LOOK_MAX_PX, LOOK_INTERVAL, LOOK_DEADZONE
@@ -68,12 +70,14 @@ PULSE_ACTIONS = {
 }
 KIT_ACTIONS = {"interact", "reset", "camera"}
 
+
 def _si_move(dx, dy):
     if _SendInput is None or INPUT is None:
         return False
     inp = INPUT(); inp.type = 0
     inp.union.mi = MOUSEINPUT(dx, dy, 0, MOUSEEVENTF_MOVE, 0, None)
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+
 
 def _si_key(vk, up=False):
     if _SendInput is None or INPUT is None:
@@ -84,12 +88,14 @@ def _si_key(vk, up=False):
     inp.union.ki = KEYBDINPUT(vk, scan, flags, 0, None)
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
+
 def _si_mouse_btn(flags, data=0):
     if _SendInput is None or INPUT is None:
         return False
     inp = INPUT(); inp.type = 0
     inp.union.mi = MOUSEINPUT(0, 0, data, flags, 0, None)
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+
 
 class MotorController:
     def __init__(self):
@@ -101,7 +107,7 @@ class MotorController:
         self.look_deadzone = float(LOOK_DEADZONE)
         self.max_look_px = int(LOOK_MAX_PX)
         self._last_pulse = {}
-        self._pulse_cooldown = 0.35
+        self._pulse_cooldown = 0.28
         self._last_look_t = 0.0
         self._look_interval = float(LOOK_INTERVAL)
         self._rmb_held = False
@@ -186,7 +192,7 @@ class MotorController:
     def _press(self, key):
         vk = VK.get(key)
         if vk is not None:
-            _si_key(vk, False); time.sleep(0.012); _si_key(vk, True); return True
+            _si_key(vk, False); time.sleep(0.008); _si_key(vk, True); return True
         if pydirectinput:
             try:
                 pydirectinput.press(key); return True
@@ -197,17 +203,20 @@ class MotorController:
     def _move(self, dx, dy):
         if not dx and not dy:
             return False
-        # burst in 2-3 micro steps for smooth ultra-fast turns
+        # more micro-steps = smoother ultra-fast turns
         steps = 1
-        if abs(dx) > 50 or abs(dy) > 50:
+        if abs(dx) > 80 or abs(dy) > 80:
+            steps = 4
+        elif abs(dx) > 40 or abs(dy) > 40:
             steps = 3
-        elif abs(dx) > 25 or abs(dy) > 25:
+        elif abs(dx) > 18 or abs(dy) > 18:
             steps = 2
         ok = False
         rdx, rdy = dx, dy
         for i in range(steps):
-            sx = rdx // (steps - i) if (steps - i) else rdx
-            sy = rdy // (steps - i) if (steps - i) else rdy
+            rem = steps - i
+            sx = rdx // rem if rem else rdx
+            sy = rdy // rem if rem else rdy
             rdx -= sx; rdy -= sy
             if _si_move(sx, sy):
                 ok = True
@@ -229,7 +238,6 @@ class MotorController:
         return False
 
     def _wheel(self, direction: int):
-        # direction +1 up, -1 down
         data = int(direction * WHEEL_DELTA) & 0xFFFFFFFF
         return _si_mouse_btn(MOUSEEVENTF_WHEEL, data)
 
@@ -266,8 +274,7 @@ class MotorController:
                 self._keyup(KEY_MAP[name]); self.active.discard(name)
         for name in desired:
             if name in ("scroll_up", "scroll_down"):
-                gap = 0.12
-                if now - self._last_pulse.get(name, 0) < gap:
+                if now - self._last_pulse.get(name, 0) < 0.1:
                     continue
                 direction = 1 if name == "scroll_up" else -1
                 if self._wheel(direction):
@@ -278,7 +285,7 @@ class MotorController:
             if not key:
                 continue
             if name in PULSE_ACTIONS:
-                gap = 0.2 if name in KIT_ACTIONS else (0.45 if name == "escape" else self._pulse_cooldown)
+                gap = 0.15 if name in KIT_ACTIONS else (0.4 if name == "escape" else self._pulse_cooldown)
                 if now - self._last_pulse.get(name, 0) < gap:
                     continue
                 if self._press(key):
@@ -296,8 +303,8 @@ class MotorController:
             if abs(raw_x) < self.look_deadzone: raw_x = 0.0
             if abs(raw_y) < self.look_deadzone: raw_y = 0.0
             dx = int(max(-self.max_look_px, min(self.max_look_px, raw_x * self.look_sensitivity)))
-            dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.92)))
-            want_rmb = "rmb_look" in desired or abs(raw_x) + abs(raw_y) > 0.22
+            dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.9)))
+            want_rmb = "rmb_look" in desired or abs(raw_x) + abs(raw_y) > 0.18
             if want_rmb:
                 if self._rmb_down():
                     sent.append("rmb_hold")
@@ -313,7 +320,7 @@ class MotorController:
         if not looking and self._rmb_held and "rmb_look" not in desired:
             self._rmb_up()
 
-        if "secondary" in desired and now - self._last_pulse.get("secondary", 0) >= 0.15:
+        if "secondary" in desired and now - self._last_pulse.get("secondary", 0) >= 0.12:
             if self._left_click():
                 sent.append("attack_click")
                 self._last_pulse["secondary"] = now
@@ -325,15 +332,15 @@ class MotorController:
             return
         try:
             self.release_all()
-            time.sleep(0.03)
+            time.sleep(0.02)
             self._press("/")
-            time.sleep(0.1)
+            time.sleep(0.08)
             if pydirectinput:
-                pydirectinput.typewrite(str(text)[:40], interval=0.018)
+                pydirectinput.typewrite(str(text)[:40], interval=0.012)
             else:
                 for ch in str(text)[:40]:
                     self._press(ch.lower() if ch.isalpha() else ch)
-            time.sleep(0.04)
+            time.sleep(0.03)
             self._press("enter")
         except Exception:
             pass

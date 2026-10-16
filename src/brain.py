@@ -1,4 +1,4 @@
-"""Block-sparse mega LIF brain — 98304 units; optional CuPy GPU accel on laptop NVIDIA."""
+"""Block-sparse LIF brain — exactly 139,255 units (FlyWire FAFB v783 count)."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Tuple, List, Any
@@ -9,12 +9,10 @@ from .config import (
     SPARSITY, INTER_SPARSITY, SPECTRAL_RADIUS, WEIGHTS_PATH,
 )
 
-# Optional GPU (CuPy) — same API as numpy; falls back to CPU cleanly.
 _xp: Any = np
 _GPU = False
 try:
     import cupy as cp  # type: ignore
-    # only claim GPU if a device is actually present
     if cp.cuda.runtime.getDeviceCount() > 0:
         _xp = cp
         _GPU = True
@@ -36,28 +34,18 @@ def _to_np(a):
     return np.asarray(a)
 
 
-def _spectral_radius_estimate(W: np.ndarray, iters: int = 16) -> float:
-    n = W.shape[0]
-    if n == 0:
-        return 0.0
-    rng = np.random.default_rng(0)
-    v = rng.standard_normal(n).astype(np.float32)
-    v /= (np.linalg.norm(v) + 1e-9)
-    for _ in range(iters):
-        w = W @ v
-        nrm = float(np.linalg.norm(w)) + 1e-9
-        v = w / nrm
-    return float(np.linalg.norm(W @ v))
+def _col_slices(n_hidden: int, col_size: int, n_cols: int) -> List[slice]:
+    out = []
+    start = 0
+    for c in range(n_cols):
+        end = min(n_hidden, start + col_size)
+        out.append(slice(start, end))
+        start = end
+    return out
 
 
 class FruitFlyBrain:
-    """12×8192 block-sparse reservoir ≈ 98k neurons.
-
-    GPU connectome note: real FlyWire (140k neurons / ~50M synapses) uses
-    specialized sparse CUDA/Metal kernels. Here we accelerate the same
-    block-sparse LIF math with CuPy when a CUDA GPU is present — not a
-    full downloaded connectome graph.
-    """
+    """139,255 LIF units — FlyWire whole-brain count (block-sparse, not real synapses)."""
 
     def __init__(self, seed: int = 0) -> None:
         self.rng = np.random.default_rng(seed)
@@ -66,32 +54,34 @@ class FruitFlyBrain:
         self.col_size = COL_SIZE
         self.n_hidden = N_HIDDEN
         self.backend = "cuda" if _GPU else "cpu"
+        self.slices = _col_slices(N_HIDDEN, COL_SIZE, N_COLS)
+        self.col_lens = [s.stop - s.start for s in self.slices]
 
-        # Build on CPU then upload once if GPU available
-        W_in = rng.normal(0.0, 0.26, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
+        W_in = rng.normal(0.0, 0.24, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
 
         W_cols: List[np.ndarray] = []
-        for c in range(N_COLS):
-            W = rng.normal(0.0, 1.0, size=(COL_SIZE, COL_SIZE)).astype(np.float32)
+        for ln in self.col_lens:
+            W = rng.normal(0.0, 1.0, size=(ln, ln)).astype(np.float32)
             W *= (rng.random(W.shape) < SPARSITY).astype(np.float32)
-            signs = np.where(rng.random(COL_SIZE) < 0.5, 1.0, -1.0).astype(np.float32)
+            signs = np.where(rng.random(ln) < 0.5, 1.0, -1.0).astype(np.float32)
             W *= signs[None, :]
-            # fast spectral scale (skip full power iter on every col — use frobenius proxy + one refine)
             fro = float(np.linalg.norm(W, ord="fro")) + 1e-9
-            W *= np.float32(SPECTRAL_RADIUS / max(1.0, fro / np.sqrt(COL_SIZE)))
+            W *= np.float32(SPECTRAL_RADIUS / max(1.0, fro / np.sqrt(max(1, ln))))
             W_cols.append(W)
 
         W_left: List[np.ndarray] = []
         W_right: List[np.ndarray] = []
-        for c in range(N_COLS):
-            Ml = rng.normal(0.0, 0.12, size=(COL_SIZE, COL_SIZE)).astype(np.float32)
+        for c, ln in enumerate(self.col_lens):
+            ln_l = self.col_lens[(c - 1) % self.n_cols]
+            ln_r = self.col_lens[(c + 1) % self.n_cols]
+            Ml = rng.normal(0.0, 0.1, size=(ln, ln_l)).astype(np.float32)
             Ml *= (rng.random(Ml.shape) < INTER_SPARSITY).astype(np.float32)
-            Mr = rng.normal(0.0, 0.12, size=(COL_SIZE, COL_SIZE)).astype(np.float32)
+            Mr = rng.normal(0.0, 0.1, size=(ln, ln_r)).astype(np.float32)
             Mr *= (rng.random(Mr.shape) < INTER_SPARSITY).astype(np.float32)
             W_left.append(Ml)
             W_right.append(Mr)
 
-        W_out = rng.normal(0.0, 0.16, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
+        W_out = rng.normal(0.0, 0.14, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
 
         xp = _xp
         self.W_in = xp.asarray(W_in)
@@ -137,14 +127,12 @@ class FruitFlyBrain:
         I = self.W_in @ s_x
         gsp = self.spikes * self.gain
         for c in range(self.n_cols):
-            sl = slice(c * self.col_size, (c + 1) * self.col_size)
+            sl = self.slices[c]
             I[sl] = I[sl] + self.W_cols[c] @ gsp[sl]
             cl = (c - 1) % self.n_cols
-            sll = slice(cl * self.col_size, (cl + 1) * self.col_size)
-            I[sl] = I[sl] + self.W_left[c] @ gsp[sll]
+            I[sl] = I[sl] + self.W_left[c] @ gsp[self.slices[cl]]
             cr = (c + 1) % self.n_cols
-            slr = slice(cr * self.col_size, (cr + 1) * self.col_size)
-            I[sl] = I[sl] + self.W_right[c] @ gsp[slr]
+            I[sl] = I[sl] + self.W_right[c] @ gsp[self.slices[cr]]
 
         I = I + 0.1 * self.v_slow
         if _GPU:
@@ -160,8 +148,8 @@ class FruitFlyBrain:
         n_sp = int(_to_np(self.spikes.sum()))
         self.total_spikes += n_sp
         self.steps += 1
-        self.rate = 0.75 * self.rate + 0.25 * self.spikes
-        self.rate_slow = 0.94 * self.rate_slow + 0.06 * self.spikes
+        self.rate = 0.74 * self.rate + 0.26 * self.spikes
+        self.rate_slow = 0.93 * self.rate_slow + 0.07 * self.spikes
         self.gain = self.gain * (1.0 + 0.0025 * (0.05 - self.rate_slow))
         self.gain = xp.clip(self.gain, 0.5, 2.0)
 
@@ -182,7 +170,7 @@ class FruitFlyBrain:
         }
         return motor, info
 
-    def decide(self, motor: np.ndarray, threshold: float = 0.12) -> list:
+    def decide(self, motor: np.ndarray, threshold: float = 0.11) -> list:
         active = [MOTOR_NAMES[i] for i in range(min(len(MOTOR_NAMES), motor.size)) if motor[i] > threshold]
         pairs = [("forward", "back"), ("left", "right"), ("look_left", "look_right"),
                  ("look_up", "look_down"), ("scroll_up", "scroll_down")]
@@ -201,7 +189,9 @@ class FruitFlyBrain:
             "W_in": _to_np(self.W_in).astype(np.float32),
             "W_out": _to_np(self.W_out).astype(np.float32),
             "gain": _to_np(self.gain).astype(np.float32),
-            "n_cols": np.array([N_COLS]), "col_size": np.array([COL_SIZE]),
+            "n_hidden": np.array([N_HIDDEN]),
+            "n_cols": np.array([N_COLS]),
+            "col_size": np.array([COL_SIZE]),
         }
         for c, W in enumerate(self.W_cols):
             payload[f"W_col_{c}"] = _to_np(W).astype(np.float32)
@@ -224,8 +214,9 @@ class FruitFlyBrain:
                 self.gain = xp.asarray(data["gain"].astype(np.float32))
             for c in range(N_COLS):
                 key = f"W_col_{c}"
-                if key in data and data[key].shape == (COL_SIZE, COL_SIZE):
-                    self.W_cols[c] = xp.asarray(data[key].astype(np.float32))
+                if key in data and c < len(self.W_cols):
+                    if data[key].shape == self.W_cols[c].shape:
+                        self.W_cols[c] = xp.asarray(data[key].astype(np.float32))
             return True
         except Exception:
             return False
