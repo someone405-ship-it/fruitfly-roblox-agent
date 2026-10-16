@@ -1,4 +1,4 @@
-"""Online training — keys + eyes + skills + mistakes + wins (GPU-safe)."""
+"""Online training — keys + eyes + skills + mistakes + wins + potential/reflex (GPU-safe)."""
 from __future__ import annotations
 import numpy as np
 from typing import Dict, List, Optional, Set
@@ -6,6 +6,9 @@ from .config import N_MOTOR, N_SENSORY
 from .skill_memory import SkillMemory
 from .eye_learn import EyeMemory
 from .mistake_memory import MistakeMemory, WinMemory
+from .potential import get_potential
+from .reflex import get_reflex
+from . import runtime_reflex
 
 HOST_KEY_TO_MOTOR: Dict[str, int] = {
     "w": 0, "s": 1, "a": 2, "d": 3, "space": 4, "shift": 5,
@@ -259,6 +262,30 @@ class Trainer:
             self.mistakes.publish_runtime(meta, notes)
         except Exception:
             pass
+        try:
+            pot = get_potential()
+            pot.tick(0.05)
+            in_arena = ("in_arena" in notes) or bool(meta.get("in_arena"))
+            bias_r, force, rnotes = get_reflex().react(meta, notes, in_arena=in_arena)
+            sens, mx = pot.look_params()
+            runtime_reflex.publish(
+                force, bias_r, rnotes,
+                threshold=pot.decide_threshold(),
+                look_sens=sens,
+                look_max=mx,
+            )
+            if "kill" in notes:
+                pot.on_event("kill")
+            if "water_death" in notes or meta.get("death_event"):
+                pot.on_event("death")
+            if "portal_close" in notes or "portal_safe" in notes:
+                pot.on_event("portal")
+            if "self_join" in notes or "join_game" in notes:
+                pot.on_event("join")
+            if getattr(self, "last_mistake_msg", ""):
+                pot.on_event("mistake")
+        except Exception:
+            pass
         r = self.reward_from_notes(notes, meta, motor)
         self.step_reward(r)
         return r
@@ -321,4 +348,11 @@ class Trainer:
         self.eye.save()
         self.mistakes.save()
         self.wins.save()
-        return f"{self.memory.summary()} | {self.eye.summary()} | {self.mistakes.summary()} | {self.wins.summary()}"
+        try:
+            get_potential().save()
+        except Exception:
+            pass
+        try:
+            return f"{self.memory.summary()} | {self.eye.summary()} | {self.mistakes.summary()} | {self.wins.summary()} | {get_potential().summary()}"
+        except Exception:
+            return f"{self.memory.summary()} | {self.eye.summary()} | {self.mistakes.summary()} | {self.wins.summary()}"
