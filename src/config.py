@@ -20,8 +20,6 @@ MOTOR_NEG = "#FF4D6A"
 
 # Official FlyWire FAFB v783 whole-brain neuron count (Dorkenwald et al. 2024):
 # 139,255 proofread neurons. We run that many LIF units block-sparse.
-# This is NOT the real synapse graph (50M synapses need specialized sparse kernels);
-# it is the same *count* of units, live on a laptop.
 N_HIDDEN = 139255
 COL_SIZE = 8192
 N_COLS = (N_HIDDEN + COL_SIZE - 1) // COL_SIZE  # 17 columns (last partial)
@@ -67,14 +65,14 @@ LOG_LINES = 300
 WEIGHTS_PATH = "fly_brain_weights.npz"
 SKILL_MEMORY_PATH = "fly_skill_memory.json"
 EYE_MEMORY_PATH = "fly_eye_memory.npz"
+MISTAKE_MEMORY_PATH = "fly_mistake_memory.json"
+WIN_MEMORY_PATH = "fly_win_memory.json"
 
-# Ultra-fast mouse / keys (human-plus snap)
 LOOK_SENSITIVITY = 95.0
 LOOK_MAX_PX = 165
 LOOK_INTERVAL = 0.004
 LOOK_DEADZONE = 0.025
 
-# Setup waits (long = higher success chance)
 SETUP_ROBLOX_WAIT_S = 45.0
 SETUP_ROBLOX_RETRIES = 12
 SETUP_RETRY_GAP_S = 3.5

@@ -1,10 +1,11 @@
-"""Online training — keys + eyes + permanent memory + heavy bootstrap."""
+"""Online training — keys + eyes + skills + mistakes + wins."""
 from __future__ import annotations
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from .config import N_MOTOR, N_SENSORY
 from .skill_memory import SkillMemory
 from .eye_learn import EyeMemory
+from .mistake_memory import MistakeMemory, WinMemory
 
 HOST_KEY_TO_MOTOR: Dict[str, int] = {
     "w": 0, "s": 1, "a": 2, "d": 3, "space": 4, "shift": 5,
@@ -44,8 +45,12 @@ class Trainer:
         self.last_reward = 0.0
         self.memory = SkillMemory()
         self.eye = EyeMemory()
+        self.mistakes = MistakeMemory()
+        self.wins = WinMemory()
         self._last_keys: List[str] = []
         self._last_sensory: Optional[np.ndarray] = None
+        self._last_actions: List[str] = []
+        self.last_mistake_msg = ""
 
     def set_enabled(self, on: bool) -> None:
         self.enabled = on
@@ -92,7 +97,6 @@ class Trainer:
         pred = self.brain.W_out @ rate
         err = self._last_target - np.tanh(pred)
         self.brain.W_out += self.imit_lr * np.outer(err, rate)
-        # eye bias: also pull toward nearest visual match if available
         if self._last_sensory is not None and self.eye.count > 10:
             try:
                 eye_t = self.eye.nearest_target(self._last_sensory, k=4)
@@ -152,21 +156,106 @@ class Trainer:
         self.samples += 1
         self.last_reward = reward
 
-    def online_step(self, notes: List[str], meta: dict, motor: np.ndarray, sensory: Optional[np.ndarray] = None) -> float:
+    def _detect_and_record_mistakes(
+        self,
+        notes: List[str],
+        meta: dict,
+        motor: np.ndarray,
+        actions: Optional[List[str]] = None,
+    ) -> None:
+        acts = actions if actions is not None else self._last_actions
+        # death / water
+        if "water_death" in notes or float(meta.get("death_event", 0)):
+            kind = "water_death" if "water_death" in notes else "death"
+            self.mistakes.record(kind, notes, meta, motor, acts)
+            self.last_mistake_msg = f"learned mistake:{kind}"
+            # strong negative update so weights also shift
+            self.step_reward(-1.2)
+        elif "need_portal" in notes and ("fight" in notes or "attack" in notes):
+            self.mistakes.record("fight_before_portal", notes, meta, motor, acts)
+            self.last_mistake_msg = "learned mistake:fight_before_portal"
+            self.step_reward(-1.0)
+        elif float(meta.get("death_event", False)):
+            self.mistakes.record("death", notes, meta, motor, acts)
+            self.last_mistake_msg = "learned mistake:death"
+
+    def _detect_and_record_wins(
+        self,
+        notes: List[str],
+        meta: dict,
+        motor: np.ndarray,
+    ) -> None:
+        if "kill" in notes:
+            self.wins.record("kill", notes, meta, motor)
+            self.step_reward(0.6)
+        elif "portal_close" in notes or "portal_safe" in notes:
+            self.wins.record("portal", notes, meta, motor)
+        elif "self_join" in notes or "join_game" in notes:
+            self.wins.record("join", notes, meta, motor)
+
+    def apply_mistake_filters(
+        self,
+        motor: np.ndarray,
+        notes: List[str],
+        meta: dict,
+        actions: List[str],
+    ) -> tuple:
+        """Return (motor, actions, banned_set) after mistake avoidance."""
+        m = motor.astype(np.float32).copy()
+        if m.size < N_MOTOR:
+            pad = np.zeros(N_MOTOR, dtype=np.float32)
+            pad[: m.size] = m
+            m = pad
+        try:
+            avoid = self.mistakes.avoid_bias(meta, notes, strength=0.9)
+            boost = self.wins.boost_bias(meta, notes, strength=0.35)
+            m = m + avoid + boost
+            m = np.clip(m, -1.5, 1.5).astype(np.float32)
+        except Exception:
+            pass
+        banned = self.mistakes.ban_actions(meta, notes)
+        prefer = self.mistakes.prefer_actions(meta, notes)
+        acts = [a for a in actions if a not in banned]
+        for p in prefer:
+            if p not in acts and p not in banned:
+                # soft prefer — only add movement prefs
+                if p in ("back", "left", "right", "forward", "sprint", "jump", "rmb_look"):
+                    acts.append(p)
+        self._last_actions = list(acts)
+        return m, acts, banned
+
+    def online_step(
+        self,
+        notes: List[str],
+        meta: dict,
+        motor: np.ndarray,
+        sensory: Optional[np.ndarray] = None,
+        actions: Optional[List[str]] = None,
+    ) -> float:
         if self.mode == "imitation":
             return self.step_imitation()
+        if actions is not None:
+            self._last_actions = list(actions)
         try:
             bias = self.memory.motor_bias_from_memory(meta, strength=0.22)
             if sensory is not None and self.eye.count > 8:
                 eye_b = self.eye.nearest_target(sensory, k=4)
                 bias = 0.55 * bias + 0.45 * eye_b
+            # fold win/mistake into readout training
+            avoid = self.mistakes.avoid_bias(meta, notes, strength=0.4)
+            boost = self.wins.boost_bias(meta, notes, strength=0.25)
+            bias = bias + boost + avoid
             if float(np.abs(bias).sum()) > 0.05:
                 rate = 0.7 * self.brain.rate + 0.3 * self.brain.rate_slow
                 pred = self.brain.W_out @ rate
-                err = bias - np.tanh(pred)
-                self.brain.W_out += 0.1 * np.outer(err, rate)
+                err = np.clip(bias, -1.0, 1.0) - np.tanh(pred)
+                self.brain.W_out += 0.12 * np.outer(err, rate)
         except Exception:
             pass
+
+        self._detect_and_record_mistakes(notes, meta, motor, actions)
+        self._detect_and_record_wins(notes, meta, motor)
+
         r = self.reward_from_notes(notes, meta, motor)
         self.step_reward(r)
         return r
@@ -176,25 +265,14 @@ class Trainer:
         scenes = [
             dict(t=_portal_target(), tag="portal"),
             dict(t=_portal_target(), tag="portal"),
-            dict(t=_portal_target(), tag="portal"),
-            dict(t=_one_hot(0, 1.0) + _one_hot(5, 0.9) + _one_hot(6, 0.6) + _one_hot(20, 0.7), tag="portal"),
             dict(t=_one_hot(0, 1.0) + _one_hot(5, 0.9) + _one_hot(7, 0.6) + _one_hot(20, 0.7), tag="portal"),
-            dict(t=_one_hot(22, 0.95), tag="leave"),  # esc
-            dict(t=_one_hot(22, 0.9) + _one_hot(13, 0.7), tag="leave"),
-            dict(t=_one_hot(25, 0.9), tag="join"),  # scroll down
-            dict(t=_one_hot(24, 0.9), tag="join"),
+            dict(t=_one_hot(22, 0.95), tag="leave"),
+            dict(t=_one_hot(25, 0.9), tag="join"),
             dict(t=_one_hot(13, 0.9) + _one_hot(14, 0.85), tag="join"),
-            dict(t=_one_hot(14, 0.95), tag="join"),
             dict(t=_one_hot(19, 0.95) + _one_hot(0, 0.85) + _one_hot(5, 0.7), tag="fight"),
-            dict(t=_one_hot(0, 1.0) + _one_hot(5, 0.85) + _one_hot(19, 0.8), tag="fight"),
-            dict(t=_one_hot(10, 0.95) + _one_hot(0, 0.7), tag="fight"),
-            dict(t=_one_hot(18, 0.95) + _one_hot(0, 0.7), tag="fight"),
             dict(t=_one_hot(1, 0.9) + _one_hot(5, 0.6), tag="flee"),
-            dict(t=_one_hot(20, 0.95) + _one_hot(7, 0.95), tag="look"),
-            dict(t=_one_hot(20, 0.95) + _one_hot(6, 0.95), tag="look"),
             dict(t=_one_hot(0, 0.9) + _one_hot(5, 0.5), tag="explore"),
-            dict(t=_one_hot(0, 0.85) + _one_hot(2, 0.5), tag="explore"),
-            dict(t=_one_hot(0, 0.85) + _one_hot(3, 0.5), tag="explore"),
+            dict(t=_one_hot(1, 0.95), tag="water_avoid"),
         ]
         err = np.zeros(1)
         for i in range(steps):
@@ -216,7 +294,7 @@ class Trainer:
             rate = 0.7 * self.brain.rate + 0.3 * self.brain.rate_slow
             pred = self.brain.W_out @ rate
             err = target - np.tanh(pred)
-            lr = self.lr * (1.3 if tag in ("portal", "join", "leave") else 1.0)
+            lr = self.lr * (1.3 if tag in ("portal", "join", "leave", "water_avoid") else 1.0)
             self.brain.W_out += lr * np.outer(err, rate)
             self.samples += 1
             if i % 15 == 0:
@@ -229,10 +307,17 @@ class Trainer:
         try:
             self.memory.save()
             self.eye.save()
+            self.mistakes.save()
+            self.wins.save()
         except Exception:
             pass
 
     def flush_memory(self) -> str:
         self.memory.save()
         self.eye.save()
-        return f"{self.memory.summary()} | {self.eye.summary()}"
+        self.mistakes.save()
+        self.wins.save()
+        return (
+            f"{self.memory.summary()} | {self.eye.summary()} | "
+            f"{self.mistakes.summary()} | {self.wins.summary()}"
+        )
