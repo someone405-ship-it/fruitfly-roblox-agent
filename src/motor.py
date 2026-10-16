@@ -1,6 +1,5 @@
-"""Motor — fast human-like keys/mouse + LMB attack + RMB look."""
+"""Motor — ultra-fast SendInput + ESC leave + scroll join + RMB look."""
 from __future__ import annotations
-from typing import Set
 import time
 import ctypes
 from ctypes import wintypes
@@ -18,14 +17,14 @@ except ImportError:
 
 from .config import LOOK_SENSITIVITY, LOOK_MAX_PX, LOOK_INTERVAL, LOOK_DEADZONE
 
-INPUT_MOUSE = 0
-INPUT_KEYBOARD = 1
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
+MOUSEEVENTF_WHEEL = 0x0800
 KEYEVENTF_KEYUP = 0x0002
+WHEEL_DELTA = 120
 
 if hasattr(ctypes, "windll"):
     class MOUSEINPUT(ctypes.Structure):
@@ -51,23 +50,28 @@ else:
 VK = {
     "q": 0x51, "w": 0x57, "s": 0x53, "a": 0x41, "d": 0x44,
     "space": 0x20, "shift": 0x10, "e": 0x45, "r": 0x52,
-    "ctrl": 0x11, "b": 0x42, "f": 0x46, "/": 0xBF,
-    "up": 0x26, "down": 0x28, "enter": 0x0D,
+    "ctrl": 0x11, "b": 0x42, "f": 0x46, "/": 0xBF, "m": 0x4D,
+    "up": 0x26, "down": 0x28, "enter": 0x0D, "esc": 0x1B,
 }
 KEY_MAP = {
     "forward": "w", "back": "s", "left": "a", "right": "d",
     "jump": "space", "sprint": "shift", "interact": "e",
     "chat_toggle": "/", "ui_up": "up", "ui_down": "down",
     "ui_select": "enter", "reset": "r", "crouch": "ctrl",
-    "emote": "b", "camera": "q", "secondary": None, "rmb_look": None, "ability_f": "f",
+    "emote": "b", "camera": "q", "secondary": None, "rmb_look": None,
+    "ability_f": "f", "escape": "esc", "menu": "m",
+    "scroll_up": None, "scroll_down": None,
 }
-PULSE_ACTIONS = {"chat_toggle", "interact", "reset", "emote", "camera", "ui_select", "ability_f"}
+PULSE_ACTIONS = {
+    "chat_toggle", "interact", "reset", "emote", "camera", "ui_select",
+    "ability_f", "escape", "menu", "scroll_up", "scroll_down",
+}
 KIT_ACTIONS = {"interact", "reset", "camera"}
 
 def _si_move(dx, dy):
     if _SendInput is None or INPUT is None:
         return False
-    inp = INPUT(); inp.type = INPUT_MOUSE
+    inp = INPUT(); inp.type = 0
     inp.union.mi = MOUSEINPUT(dx, dy, 0, MOUSEEVENTF_MOVE, 0, None)
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
@@ -76,15 +80,15 @@ def _si_key(vk, up=False):
         return False
     scan = _MapVirtualKey(vk, 0)
     flags = KEYEVENTF_KEYUP if up else 0
-    inp = INPUT(); inp.type = INPUT_KEYBOARD
+    inp = INPUT(); inp.type = 1
     inp.union.ki = KEYBDINPUT(vk, scan, flags, 0, None)
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
-def _si_mouse_btn(flags):
+def _si_mouse_btn(flags, data=0):
     if _SendInput is None or INPUT is None:
         return False
-    inp = INPUT(); inp.type = INPUT_MOUSE
-    inp.union.mi = MOUSEINPUT(0, 0, 0, flags, 0, None)
+    inp = INPUT(); inp.type = 0
+    inp.union.mi = MOUSEINPUT(0, 0, data, flags, 0, None)
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
 class MotorController:
@@ -97,7 +101,7 @@ class MotorController:
         self.look_deadzone = float(LOOK_DEADZONE)
         self.max_look_px = int(LOOK_MAX_PX)
         self._last_pulse = {}
-        self._pulse_cooldown = 0.55
+        self._pulse_cooldown = 0.35
         self._last_look_t = 0.0
         self._look_interval = float(LOOK_INTERVAL)
         self._rmb_held = False
@@ -182,7 +186,7 @@ class MotorController:
     def _press(self, key):
         vk = VK.get(key)
         if vk is not None:
-            _si_key(vk, False); time.sleep(0.018); _si_key(vk, True); return True
+            _si_key(vk, False); time.sleep(0.012); _si_key(vk, True); return True
         if pydirectinput:
             try:
                 pydirectinput.press(key); return True
@@ -193,19 +197,26 @@ class MotorController:
     def _move(self, dx, dy):
         if not dx and not dy:
             return False
-        # split large moves into 1-2 steps for smoother but still fast human feel
-        if abs(dx) > 40 or abs(dy) > 40:
-            hdx, hdy = dx // 2, dy // 2
-            _si_move(hdx, hdy)
-            dx, dy = dx - hdx, dy - hdy
-        if _si_move(dx, dy):
-            return True
-        if pydirectinput:
-            try:
-                pydirectinput.moveRel(dx, dy, relative=True); return True
-            except Exception:
-                return False
-        return False
+        # burst in 2-3 micro steps for smooth ultra-fast turns
+        steps = 1
+        if abs(dx) > 50 or abs(dy) > 50:
+            steps = 3
+        elif abs(dx) > 25 or abs(dy) > 25:
+            steps = 2
+        ok = False
+        rdx, rdy = dx, dy
+        for i in range(steps):
+            sx = rdx // (steps - i) if (steps - i) else rdx
+            sy = rdy // (steps - i) if (steps - i) else rdy
+            rdx -= sx; rdy -= sy
+            if _si_move(sx, sy):
+                ok = True
+            elif pydirectinput:
+                try:
+                    pydirectinput.moveRel(sx, sy, relative=True); ok = True
+                except Exception:
+                    pass
+        return ok
 
     def _left_click(self):
         if _si_mouse_btn(MOUSEEVENTF_LEFTDOWN) and _si_mouse_btn(MOUSEEVENTF_LEFTUP):
@@ -216,6 +227,11 @@ class MotorController:
             except Exception:
                 return False
         return False
+
+    def _wheel(self, direction: int):
+        # direction +1 up, -1 down
+        data = int(direction * WHEEL_DELTA) & 0xFFFFFFFF
+        return _si_mouse_btn(MOUSEEVENTF_WHEEL, data)
 
     def _rmb_down(self):
         if self._rmb_held:
@@ -249,11 +265,20 @@ class MotorController:
             if name not in desired and KEY_MAP.get(name):
                 self._keyup(KEY_MAP[name]); self.active.discard(name)
         for name in desired:
+            if name in ("scroll_up", "scroll_down"):
+                gap = 0.12
+                if now - self._last_pulse.get(name, 0) < gap:
+                    continue
+                direction = 1 if name == "scroll_up" else -1
+                if self._wheel(direction):
+                    self._last_pulse[name] = now
+                    sent.append(name)
+                continue
             key = KEY_MAP.get(name)
             if not key:
                 continue
             if name in PULSE_ACTIONS:
-                gap = 0.28 if name in KIT_ACTIONS else self._pulse_cooldown
+                gap = 0.2 if name in KIT_ACTIONS else (0.45 if name == "escape" else self._pulse_cooldown)
                 if now - self._last_pulse.get(name, 0) < gap:
                     continue
                 if self._press(key):
@@ -271,8 +296,8 @@ class MotorController:
             if abs(raw_x) < self.look_deadzone: raw_x = 0.0
             if abs(raw_y) < self.look_deadzone: raw_y = 0.0
             dx = int(max(-self.max_look_px, min(self.max_look_px, raw_x * self.look_sensitivity)))
-            dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.9)))
-            want_rmb = "rmb_look" in desired or abs(raw_x) + abs(raw_y) > 0.28
+            dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.92)))
+            want_rmb = "rmb_look" in desired or abs(raw_x) + abs(raw_y) > 0.22
             if want_rmb:
                 if self._rmb_down():
                     sent.append("rmb_hold")
@@ -288,7 +313,7 @@ class MotorController:
         if not looking and self._rmb_held and "rmb_look" not in desired:
             self._rmb_up()
 
-        if "secondary" in desired and now - self._last_pulse.get("secondary", 0) >= 0.22:
+        if "secondary" in desired and now - self._last_pulse.get("secondary", 0) >= 0.15:
             if self._left_click():
                 sent.append("attack_click")
                 self._last_pulse["secondary"] = now
@@ -300,15 +325,15 @@ class MotorController:
             return
         try:
             self.release_all()
-            time.sleep(0.04)
+            time.sleep(0.03)
             self._press("/")
-            time.sleep(0.12)
+            time.sleep(0.1)
             if pydirectinput:
-                pydirectinput.typewrite(str(text)[:40], interval=0.025)
+                pydirectinput.typewrite(str(text)[:40], interval=0.018)
             else:
                 for ch in str(text)[:40]:
                     self._press(ch.lower() if ch.isalpha() else ch)
-            time.sleep(0.05)
+            time.sleep(0.04)
             self._press("enter")
         except Exception:
             pass

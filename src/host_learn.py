@@ -1,4 +1,4 @@
-"""Host key + mouse capture for LEARN FROM ME imitation mode."""
+"""Host key + mouse + ESC capture for LEARN FROM ME (keys + eyes)."""
 from __future__ import annotations
 import threading
 from typing import List, Set, Optional, Tuple
@@ -13,7 +13,7 @@ _active = False
 
 _CHAR_MAP = {
     "w": "w", "a": "a", "s": "s", "d": "d",
-    "q": "q", "e": "e", "r": "r", "f": "f",
+    "q": "q", "e": "e", "r": "r", "f": "f", "m": "m",
     " ": "space",
 }
 
@@ -70,10 +70,18 @@ def start() -> bool:
                 try:
                     if key == Key.space:
                         return "space"
+                    if key == Key.esc:
+                        return "esc"
                     if key in (Key.shift, Key.shift_l, Key.shift_r):
                         return "shift"
                     if key in (Key.ctrl, Key.ctrl_l, Key.ctrl_r):
                         return "ctrl"
+                    if key in (Key.up,):
+                        return "up"
+                    if key in (Key.down,):
+                        return "down"
+                    if key in (Key.enter,):
+                        return "enter"
                     if hasattr(key, "char") and key.char:
                         return _CHAR_MAP.get(key.char.lower(), key.char.lower())
                 except Exception:
@@ -91,19 +99,20 @@ def start() -> bool:
                 with _lock:
                     if pressed:
                         _mouse_buttons.add(name)
-                        if name == "rmb":
-                            _keys.add("rmb")
+                        _keys.add(name)
                     else:
                         _mouse_buttons.discard(name)
-                        if name == "rmb":
-                            _keys.discard("rmb")
+                        _keys.discard(name)
 
-            def on_move(x, y):
-                # relative deltas tracked via last absolute — best-effort
-                pass
+            def on_scroll(x, y, dx, dy):
+                with _lock:
+                    if dy > 0:
+                        _keys.add("scroll_up")
+                    elif dy < 0:
+                        _keys.add("scroll_down")
 
             _listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-            _mouse_listener = mouse.Listener(on_click=on_click, on_move=on_move)
+            _mouse_listener = mouse.Listener(on_click=on_click, on_scroll=on_scroll)
             _listener.start()
             _mouse_listener.start()
             _active = True
