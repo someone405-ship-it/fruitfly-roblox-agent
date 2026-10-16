@@ -1,13 +1,12 @@
-"""Advanced motor decoder — expanded action set + focus helper."""
-
+"""Motor decoder — clamped look, no corner slam, safe key holds."""
 from __future__ import annotations
-
 from typing import List, Optional, Set
+import time
 
 try:
     import pydirectinput
-    pydirectinput.FAILSAFE = True
-    pydirectinput.PAUSE = 0.008
+    pydirectinput.FAILSAFE = False
+    pydirectinput.PAUSE = 0.0
 except ImportError:
     pydirectinput = None
 
@@ -16,8 +15,6 @@ try:
 except ImportError:
     gw = None
 
-from .config import MOTOR_NAMES
-
 KEY_MAP = {
     "forward": "w", "back": "s", "left": "a", "right": "d",
     "jump": "space", "sprint": "shift", "interact": "e",
@@ -25,6 +22,7 @@ KEY_MAP = {
     "ui_select": "enter", "reset": "r", "crouch": "ctrl",
     "emote": "b", "camera": "f", "secondary": None,
 }
+PULSE_ACTIONS = {"chat_toggle", "interact", "reset", "emote", "camera", "ui_select", "secondary"}
 
 
 class MotorController:
@@ -32,16 +30,26 @@ class MotorController:
         self.active: Set[str] = set()
         self.enabled = True
         self.last_sent: List[str] = []
-        self.look_sensitivity = 10.0
+        self.look_sensitivity = 4.0
+        self.look_deadzone = 0.45
+        self.max_look_px = 12
+        self._last_pulse: dict = {}
+        self._pulse_cooldown = 1.2
+        self._last_look_t = 0.0
+        self._look_interval = 0.05
 
     def focus_roblox(self) -> bool:
         if gw is None:
             return False
         try:
-            wins = [w for w in gw.getAllWindows() if w.title and "roblox" in w.title.lower()]
+            wins = [w for w in gw.getAllWindows()
+                    if w.title and "roblox" in w.title.lower()
+                    and "fruitfly" not in w.title.lower()]
             if not wins:
                 return False
-            w = max(wins, key=lambda x: x.width * x.height)
+            w = max(wins, key=lambda x: max(0, x.width) * max(0, x.height))
+            if w.width < 80:
+                return False
             if w.isMinimized:
                 w.restore()
             w.activate()
@@ -52,6 +60,7 @@ class MotorController:
     def apply(self, actions: List[str], motor_scores: Optional[list] = None) -> List[str]:
         if not self.enabled or pydirectinput is None:
             return []
+        now = time.time()
         desired = set(actions)
         sent: List[str] = []
         for name in list(self.active):
@@ -63,7 +72,20 @@ class MotorController:
                 self.active.discard(name)
         for name in desired:
             key = KEY_MAP.get(name)
-            if key and name not in self.active:
+            if not key:
+                continue
+            if name in PULSE_ACTIONS:
+                last = self._last_pulse.get(name, 0.0)
+                if now - last < self._pulse_cooldown:
+                    continue
+                try:
+                    pydirectinput.press(key)
+                    self._last_pulse[name] = now
+                    sent.append(name)
+                except Exception:
+                    pass
+                continue
+            if name not in self.active:
                 try:
                     pydirectinput.keyDown(key)
                     self.active.add(name)
@@ -71,22 +93,46 @@ class MotorController:
                 except Exception:
                     pass
         if motor_scores is not None and len(motor_scores) >= 10:
-            dx = (-float(motor_scores[6]) + float(motor_scores[7])) * self.look_sensitivity
-            dy = (-float(motor_scores[8]) + float(motor_scores[9])) * (self.look_sensitivity * 0.75)
-            if abs(dx) > 0.4 or abs(dy) > 0.4:
+            if now - self._last_look_t >= self._look_interval:
+                ll, lr = float(motor_scores[6]), float(motor_scores[7])
+                lu, ld = float(motor_scores[8]), float(motor_scores[9])
+                raw_x, raw_y = (-ll + lr), (-lu + ld)
+                if abs(raw_x) < self.look_deadzone:
+                    raw_x = 0.0
+                if abs(raw_y) < self.look_deadzone:
+                    raw_y = 0.0
+                dx = int(max(-self.max_look_px, min(self.max_look_px, raw_x * self.look_sensitivity)))
+                dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.8)))
+                if dx != 0 or dy != 0:
+                    try:
+                        pydirectinput.moveRel(dx, dy, relative=True)
+                        sent.append(f"look({dx},{dy})")
+                        self._last_look_t = now
+                    except Exception:
+                        pass
+        if "secondary" in desired:
+            last = self._last_pulse.get("secondary", 0.0)
+            if now - last >= self._pulse_cooldown:
                 try:
-                    pydirectinput.moveRel(int(dx), int(dy), relative=True)
-                    sent.append(f"look({dx:.0f},{dy:.0f})")
+                    pydirectinput.click(button="right")
+                    self._last_pulse["secondary"] = now
+                    sent.append("secondary")
                 except Exception:
                     pass
-        if "secondary" in desired:
-            try:
-                pydirectinput.click(button="right")
-                sent.append("secondary")
-            except Exception:
-                pass
         self.last_sent = sent
         return sent
+
+    def type_text(self, text: str) -> None:
+        if not self.enabled or pydirectinput is None:
+            return
+        try:
+            pydirectinput.press("/")
+            time.sleep(0.15)
+            pydirectinput.typewrite(text, interval=0.04)
+            time.sleep(0.05)
+            pydirectinput.press("enter")
+        except Exception:
+            pass
 
     def release_all(self) -> None:
         if pydirectinput is None:
