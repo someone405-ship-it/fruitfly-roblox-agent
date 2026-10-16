@@ -1,24 +1,28 @@
-# FruitFly Roblox Agent — ADVANCED
+# FruitFly Roblox Agent — 65k FAST
 
-**8192-unit dual-timescale fruit-fly brain plays Roblox autonomously.**
+**Block-sparse 65,536-neuron fruit-fly brain** plays Roblox: portal-first, ultra-fast mouse, learns from your **eyes + keys**, can ESC-leave and self-join games.
 
-## What's new
+## Scale
 
-- **Brain:** 8192 LIF reservoir neurons (practical advanced scale), expanded 256-D sensory, 22 motor channels
-- **Full Roblox window:** launches and **maximizes** Roblox so the page is fully open on run/start
-- **RMB look:** fruitfly holds **right mouse button** while looking around for freelook
-- **Learn from you forever:** `LEARN FROM ME` tracks keys + LMB/RMB; skills written to `fly_skill_memory.json` and reused forever
-- **Permanent memory:** nearest-neighbor skill recall biases motor online; autosave every ~200 steps + on stop/F9
-- **Brain weights:** `fly_brain_weights.npz` saved/loaded automatically
-- **Smarter autonomy:** kill/loot, death hurt, character kits, predictive dodge, power tiers, circuit bias
+| Spec | Value |
+|------|-------|
+| Neurons | **65,536** (8 columns × 8192 LIF) |
+| Real MaleCNS | ~140k–167k (full dense needs GPU connectome kernels) |
+| This build | Near-full practical CPU scale with sparse columns |
+| Sensory | 384-D vision |
+| Motors | 26 (incl. ESC, scroll, RMB look) |
 
-> Note: a literal dense 80k×80k reservoir needs tens of GB of RAM. 8192 is the advanced practical size that still runs live on a normal PC.
+Inspired by [Desktop Fly](https://github.com/DenisSergeevitch/desktop-fly), [fly-self-driving](https://github.com/suanmiao/fly-self-driving), FlyWire / MaleCNS research.
 
-## Download EXE
+## Features
 
-Actions → Build Windows EXE → artifact **FruitFlyRoblox-windows**
-
-https://github.com/someone405-ship-it/fruitfly-roblox-agent/actions
+- **Ultra-fast mouse** — sens 62, up to 110px/tick, 8ms interval, micro-step bursts
+- **Portal-first** — never combat until portal/arena; portal ≠ danger
+- **LEARN FROM ME** — tracks keys **and** screen (eye pairs in `fly_eye_memory.npz`)
+- **Permanent skills** — `fly_skill_memory.json` + brain weights
+- **Leave / join** — ESC leave when bored/hurt; scroll + UI + click to join new games
+- **Explore** — hunt portal, rails, parkour, freelook
+- **Maximize Roblox** on launch/start
 
 ## Run
 
@@ -31,13 +35,15 @@ pip install -r requirements.txt
 python run_app.py
 ```
 
-**START** — autonomy (Roblox maximized)  
-**LEARN FROM ME** — you play, he copies keys/RMB and saves skills forever  
+**START** — autonomy  
+**LEARN FROM ME** — you play; he copies keys + what he sees  
 **F9** — emergency stop + save  
-**Esc** — quit
 
-Files created next to the app:
-- `fly_brain_weights.npz` — synaptic weights
-- `fly_skill_memory.json` — permanent host-learned skills
+Saved next to the app:
+- `fly_brain_weights.npz`
+- `fly_skill_memory.json`
+- `fly_eye_memory.npz`
+
+First run after this upgrade re-bootstraps (architecture changed). Give it ~30–60s on start.
 
 MIT. Absolute olliE.
