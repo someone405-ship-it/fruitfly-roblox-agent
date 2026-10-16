@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 import numpy as np
 from .config import MISTAKE_MEMORY_PATH, WIN_MEMORY_PATH, N_MOTOR, MOTOR_NAMES
+from . import runtime_bans
 
-# Hard rules always enforced (also written into mistake file on first fire)
 HARD_RULES = [
     {
         "id": "no_fight_outside_arena",
@@ -42,15 +42,10 @@ def _ctx_from_meta_notes(meta: dict, notes: List[str]) -> Dict[str, float]:
 
 def _ctx_distance(a: dict, b: dict) -> float:
     keys = ("threat", "loom", "motion", "portal", "water", "lobby", "rail", "need_portal", "in_arena", "water_high")
-    d = 0.0
-    for k in keys:
-        d += abs(float(a.get(k, 0.0)) - float(b.get(k, 0.0)))
-    return d
+    return sum(abs(float(a.get(k, 0.0)) - float(b.get(k, 0.0))) for k in keys)
 
 
 class MistakeMemory:
-    """Stores failures forever; suppresses the same motor pattern in similar context."""
-
     def __init__(self, path: str = MISTAKE_MEMORY_PATH) -> None:
         self.path = Path(path)
         self.mistakes: List[Dict[str, Any]] = []
@@ -104,7 +99,6 @@ class MistakeMemory:
             "context": ctx,
             "count": 1,
         }
-        # merge near-duplicates (same kind + close context)
         for old in self.mistakes[-80:]:
             if old.get("kind") == kind and _ctx_distance(old.get("context", {}), ctx) < 0.35:
                 old["count"] = int(old.get("count", 1)) + 1
@@ -117,13 +111,11 @@ class MistakeMemory:
                 return
         self.mistakes.append(entry)
         self.stats["total_recorded"] = int(self.stats.get("total_recorded", 0)) + 1
-        # promote recurring kinds into permanent ban rules
         if kind in ("death", "water_death", "fight_before_portal"):
             self.banned_rules.add(kind)
         self.save()
 
     def avoid_bias(self, meta: dict, notes: List[str], strength: float = 0.85) -> np.ndarray:
-        """Negative motor bias for patterns that failed in similar contexts."""
         out = np.zeros(N_MOTOR, dtype=np.float32)
         ctx = _ctx_from_meta_notes(meta, notes)
         hits = 0
@@ -137,7 +129,6 @@ class MistakeMemory:
                 pad = np.zeros(N_MOTOR, dtype=np.float32)
                 pad[: vec.size] = vec
                 vec = pad
-            # push AWAY from the bad motor pattern
             out -= w * vec[:N_MOTOR]
             hits += 1
         if hits:
@@ -147,7 +138,6 @@ class MistakeMemory:
         return out.astype(np.float32)
 
     def ban_actions(self, meta: dict, notes: List[str]) -> Set[str]:
-        """Hard action bans from rules + learned mistakes."""
         banned: Set[str] = set()
         need_portal = "need_portal" in notes or not ("in_arena" in notes)
         water_high = float(meta.get("water_score", 0.0) or 0.0) > 0.4
@@ -162,13 +152,11 @@ class MistakeMemory:
             if ok:
                 banned.update(rule.get("ban_actions", []))
 
-        # learned permanent bans
         if "fight_before_portal" in self.banned_rules and need_portal:
             banned.update({"secondary", "interact", "reset", "camera"})
         if "water_death" in self.banned_rules and water_high:
             banned.update({"forward", "sprint"})
 
-        # recent identical mistake kinds in this context
         ctx = _ctx_from_meta_notes(meta, notes)
         for m in self.mistakes[-100:]:
             if _ctx_distance(m.get("context", {}), ctx) > 0.5:
@@ -189,6 +177,12 @@ class MistakeMemory:
             prefer.update({"forward", "sprint", "rmb_look"})
         return prefer
 
+    def publish_runtime(self, meta: dict, notes: List[str]) -> None:
+        """Push current bans into process-wide set for motor.apply."""
+        banned = self.ban_actions(meta, notes)
+        prefer = self.prefer_actions(meta, notes)
+        runtime_bans.set_bans(banned, prefer)
+
     def summary(self) -> str:
         return (
             f"mistakes={len(self.mistakes)} bans={len(self.banned_rules)} "
@@ -197,8 +191,6 @@ class MistakeMemory:
 
 
 class WinMemory:
-    """Stores successful patterns forever — reinforce what worked."""
-
     def __init__(self, path: str = WIN_MEMORY_PATH) -> None:
         self.path = Path(path)
         self.wins: List[Dict[str, Any]] = []
