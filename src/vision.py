@@ -1,4 +1,4 @@
-"""Vision — Roblox only; strict water (bottom band); portal + rail priority."""
+"""Vision — Roblox only; rail/portal; kill-feed detect."""
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -26,6 +26,7 @@ class VisionEncoder:
         self.last_region: Optional[dict] = None
         self.last_meta: Dict[str, Any] = {}
         self._last_title = ""
+        self._prev_kill_score = 0.0
 
     def find_roblox_window_info(self):
         if gw is None:
@@ -74,7 +75,8 @@ class VisionEncoder:
             self.last_frame = frame
             self.last_meta = {"motion": 0, "food_score": 0, "loom_score": 0, "no_roblox": True,
                               "water_score": 0, "lobby_score": 0, "threat_score": 0,
-                              "rail_score": 0, "portal_score": 0, "threat_cx": 0.5}
+                              "rail_score": 0, "portal_score": 0, "threat_cx": 0.5,
+                              "kill_score": 0, "kill_event": False}
             return frame
         self.last_region = region
         try:
@@ -169,7 +171,6 @@ class VisionEncoder:
         center_dark = float(np.mean(center_patch < 0.35))
         loom_score = float(np.clip(center_motion * 4.0 + center_dark * 0.5, 0.0, 1.0))
 
-        # WATER: only bottom 35% — sky/UI blue must not count
         y_water0 = int(CAPTURE_H * 0.65)
         hsv_bottom = hsv[y_water0:, :, :]
         water_mask = cv2.inRange(hsv_bottom, (95, 100, 70), (125, 255, 220))
@@ -230,6 +231,19 @@ class VisionEncoder:
             if len(xs):
                 threat_cx = float(xs.mean()) / CAPTURE_W
 
+        top = hsv[: max(1, int(CAPTURE_H * 0.22)), :, :]
+        gold = cv2.inRange(top, (15, 80, 140), (40, 255, 255))
+        white = cv2.inRange(top, (0, 0, 200), (180, 40, 255))
+        kill_blob = cv2.bitwise_or(gold, white)
+        kill_ratio = float(np.count_nonzero(kill_blob)) / float(max(1, kill_blob.size))
+        top_red1 = cv2.inRange(top, (0, 120, 100), (12, 255, 255))
+        top_red2 = cv2.inRange(top, (165, 120, 100), (180, 255, 255))
+        top_red = float(np.count_nonzero(cv2.bitwise_or(top_red1, top_red2))) / float(max(1, top.shape[0] * top.shape[1]))
+        kill_score = float(np.clip(kill_ratio * 14.0 + top_red * 6.0, 0.0, 1.0))
+        prev_ks = float(self._prev_kill_score)
+        kill_event = kill_score > 0.28 and prev_ks < 0.18
+        self._prev_kill_score = 0.9 * prev_ks + 0.1 * kill_score
+
         self.last_meta = {
             "motion": motion, "food_score": food_score, "brightness": float(gray.mean()),
             "edge": edge, "center_bright": center, "loom_score": loom_score,
@@ -239,6 +253,7 @@ class VisionEncoder:
             "rail_score": rail_score, "rail_cx": rail_cx,
             "portal_score": portal_score, "portal_cx": portal_cx, "portal_cy": portal_cy,
             "threat_cx": threat_cx,
+            "kill_score": kill_score, "kill_event": bool(kill_event),
         }
         return vec
 
