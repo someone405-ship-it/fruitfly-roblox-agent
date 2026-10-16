@@ -1,4 +1,4 @@
-"""Active feature registry — real wired capabilities."""
+"""Active feature registry."""
 FEATURES = [
     "free_will_goal_softmax",
     "personality_aggression",
@@ -60,5 +60,14 @@ FEATURES = [
     "buff_shield_from_kill",
     "kill_train_reward",
     "kill_chat_drop",
+    "neurons_3072",
+    "power_unlock_tiers",
+    "death_detect",
+    "death_hurt",
+    "death_food_loss",
+    "mouse_3d_isometric",
+    "figma_ui_hover",
+    "kill_always_reward",
+    "death_flee_reset",
 ]
 assert len(FEATURES) >= 30

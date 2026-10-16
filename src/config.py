@@ -19,7 +19,7 @@ MOTOR_POS = "#00E5FF"
 MOTOR_NEG = "#FF4D6A"
 
 N_SENSORY = 160
-N_HIDDEN = 2048
+N_HIDDEN = 3072
 N_MOTOR = 20
 DT_MS = 16.0
 TAU_MEM = 18.0
@@ -42,20 +42,29 @@ MOTOR_NAMES = [
 ]
 
 MOTOR_LABELS = {
-    "forward": "W forward", "back": "S back", "left": "A left", "right": "D right",
-    "jump": "Space jump", "sprint": "Shift sprint", "look_left": "Look L",
-    "look_right": "Look R", "look_up": "Look Up", "look_down": "Look Dn",
-    "interact": "E ability", "chat_toggle": "Chat /", "ui_up": "UI up",
-    "ui_down": "UI down", "ui_select": "UI Enter", "reset": "R ultimate",
-    "crouch": "Ctrl crouch", "emote": "Emote", "camera": "Q ability", "secondary": "RMB",
+    "forward": "W", "back": "S", "left": "A", "right": "D",
+    "jump": "Space", "sprint": "Shift",
+    "look_left": "Look L", "look_right": "Look R", "look_up": "Look Up", "look_down": "Look Dn",
+    "interact": "E ability", "chat_toggle": "Chat", "ui_up": "UI Up", "ui_down": "UI Dn",
+    "ui_select": "Enter", "reset": "R ability", "crouch": "Ctrl", "emote": "Emote",
+    "camera": "Q ability", "secondary": "LMB",
 }
 
-WINDOW_W = 1440
-WINDOW_H = 900
+WINDOW_W = 1500
+WINDOW_H = 920
 MONITOR_W = 640
 MONITOR_H = 360
 LOG_LINES = 300
 WEIGHTS_PATH = "fly_brain_weights.npz"
+
+POWER_TIERS = [
+    (0, 1.0, "dormant"),
+    (3, 1.08, "awake"),
+    (8, 1.16, "charged"),
+    (15, 1.28, "ascendant"),
+    (25, 1.42, "unlocked"),
+]
+
 
 @dataclass
 class Theme:
@@ -68,5 +77,6 @@ class Theme:
     border: str = BORDER
     danger: str = DANGER
     success: str = SUCCESS
+
 
 THEME = Theme()
