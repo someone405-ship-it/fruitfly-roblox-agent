@@ -1,6 +1,6 @@
 """Live circuit rates panel (desktop-fly brain-window idea)."""
 from __future__ import annotations
-from typing import Dict
+from typing import Dict, Any
 from PyQt6.QtGui import QPainter, QColor, QFont
 from PyQt6.QtWidgets import QWidget
 from .config import BG_CARD, ACCENT, TEXT_SECONDARY, TEXT_PRIMARY, DANGER, SUCCESS
@@ -15,6 +15,7 @@ CHANNELS = [
     ("groom", "DNg11 groom", TEXT_SECONDARY),
 ]
 
+
 class CircuitPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -27,6 +28,27 @@ class CircuitPanel(QWidget):
             self._r[k] = float(rates.get(k, 0.0))
         self._escape = bool(rates.get("escape", False))
         self.update()
+
+    def set_circuit(self, info: Dict[str, Any]) -> None:
+        """Accept full stats dict from worker (alias used by main)."""
+        if not isinstance(info, dict):
+            return
+        rates = {
+            "loom_rate": float(info.get("loom_rate", info.get("loom_score", 0.0) or 0.0)),
+            "gf_rate": float(info.get("gf_rate", 0.0) or 0.0),
+            "forward": float(info.get("forward", 0.0) or 0.0),
+            "reverse": float(info.get("reverse", 0.0) or 0.0),
+            "steer_l": float(info.get("steer_l", 0.0) or 0.0),
+            "steer_r": float(info.get("steer_r", 0.0) or 0.0),
+            "groom": float(info.get("groom", 0.0) or 0.0),
+            "escape": bool(info.get("escape", False)),
+        }
+        # fallbacks from behavior/vision
+        if rates["gf_rate"] < 1e-6 and float(info.get("loom_score", 0) or 0) > 0.4:
+            rates["gf_rate"] = float(info.get("loom_score", 0)) * 0.6
+        if rates["forward"] < 1e-6:
+            rates["forward"] = max(0.0, float(info.get("drv_arousal", 0) or 0) * 0.5)
+        self.set_rates(rates)
 
     def paintEvent(self, event) -> None:
         p = QPainter(self)

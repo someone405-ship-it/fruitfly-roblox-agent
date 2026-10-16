@@ -1,4 +1,4 @@
-"""Block-sparse mega LIF brain — 65536 units in 8 columns (near-full fly scale)."""
+"""Block-sparse mega LIF brain — 98304 units (12×8192), optimized step."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Tuple, List
@@ -10,7 +10,7 @@ from .config import (
 )
 
 
-def _spectral_radius_estimate(W: np.ndarray, iters: int = 28) -> float:
+def _spectral_radius_estimate(W: np.ndarray, iters: int = 22) -> float:
     n = W.shape[0]
     if n == 0:
         return 0.0
@@ -25,7 +25,7 @@ def _spectral_radius_estimate(W: np.ndarray, iters: int = 28) -> float:
 
 
 class FruitFlyBrain:
-    """8×8192 block-sparse reservoir ≈ 65k neurons, RAM-friendly."""
+    """12×8192 block-sparse reservoir ≈ 98k neurons — near-full fly scale."""
 
     def __init__(self, seed: int = 0) -> None:
         self.rng = np.random.default_rng(seed)
@@ -34,10 +34,8 @@ class FruitFlyBrain:
         self.col_size = COL_SIZE
         self.n_hidden = N_HIDDEN
 
-        # Input projects to all columns
-        self.W_in = rng.normal(0.0, 0.28, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
+        self.W_in = rng.normal(0.0, 0.26, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
 
-        # Within-column sparse recurrence
         self.W_cols: List[np.ndarray] = []
         for c in range(N_COLS):
             W = rng.normal(0.0, 1.0, size=(COL_SIZE, COL_SIZE)).astype(np.float32)
@@ -49,20 +47,18 @@ class FruitFlyBrain:
                 W *= np.float32(SPECTRAL_RADIUS / radius)
             self.W_cols.append(W)
 
-        # Sparse inter-column bridges (small dense maps col→col)
-        self.W_inter = []
+        # ring inter-column only (each col talks to ±1 neighbor) — O(N) not O(N² cols)
+        self.W_left: List[np.ndarray] = []
+        self.W_right: List[np.ndarray] = []
         for c in range(N_COLS):
-            row = []
-            for d in range(N_COLS):
-                if c == d:
-                    row.append(None)
-                else:
-                    M = rng.normal(0.0, 0.15, size=(COL_SIZE, COL_SIZE)).astype(np.float32)
-                    M *= (rng.random(M.shape) < INTER_SPARSITY).astype(np.float32)
-                    row.append(M)
-            self.W_inter.append(row)
+            Ml = rng.normal(0.0, 0.12, size=(COL_SIZE, COL_SIZE)).astype(np.float32)
+            Ml *= (rng.random(Ml.shape) < INTER_SPARSITY).astype(np.float32)
+            Mr = rng.normal(0.0, 0.12, size=(COL_SIZE, COL_SIZE)).astype(np.float32)
+            Mr *= (rng.random(Mr.shape) < INTER_SPARSITY).astype(np.float32)
+            self.W_left.append(Ml)
+            self.W_right.append(Mr)
 
-        self.W_out = rng.normal(0.0, 0.18, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
+        self.W_out = rng.normal(0.0, 0.16, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
 
         self.v = np.zeros(N_HIDDEN, dtype=np.float32)
         self.v_slow = np.zeros(N_HIDDEN, dtype=np.float32)
@@ -90,18 +86,20 @@ class FruitFlyBrain:
             s = out
 
         I = self.W_in @ s
-        # column recurrence + inter bridges
+        gsp = self.spikes * self.gain
         for c in range(self.n_cols):
             sl = slice(c * self.col_size, (c + 1) * self.col_size)
-            sp = self.spikes[sl] * self.gain[sl]
-            I[sl] += self.W_cols[c] @ sp
-            for d in range(self.n_cols):
-                M = self.W_inter[c][d]
-                if M is not None:
-                    sdl = slice(d * self.col_size, (d + 1) * self.col_size)
-                    I[sl] += M @ (self.spikes[sdl] * self.gain[sdl])
+            I[sl] += self.W_cols[c] @ gsp[sl]
+            # left neighbor
+            cl = (c - 1) % self.n_cols
+            sll = slice(cl * self.col_size, (cl + 1) * self.col_size)
+            I[sl] += self.W_left[c] @ gsp[sll]
+            # right neighbor
+            cr = (c + 1) % self.n_cols
+            slr = slice(cr * self.col_size, (cr + 1) * self.col_size)
+            I[sl] += self.W_right[c] @ gsp[slr]
 
-        I += 0.12 * self.v_slow
+        I += 0.1 * self.v_slow
         I += NOISE_SCALE * self.rng.standard_normal(N_HIDDEN).astype(np.float32)
         self.v += (-self.v + I) * (DT_MS / TAU_MEM)
         self.v_slow += (-self.v_slow + self.v) * (DT_MS / TAU_SLOW)
@@ -111,12 +109,12 @@ class FruitFlyBrain:
         n_sp = int(self.spikes.sum())
         self.total_spikes += n_sp
         self.steps += 1
-        self.rate = 0.78 * self.rate + 0.22 * self.spikes
-        self.rate_slow = 0.95 * self.rate_slow + 0.05 * self.spikes
-        self.gain *= 1.0 + 0.002 * (0.05 - self.rate_slow)
+        self.rate = 0.75 * self.rate + 0.25 * self.spikes
+        self.rate_slow = 0.94 * self.rate_slow + 0.06 * self.spikes
+        self.gain *= 1.0 + 0.0025 * (0.05 - self.rate_slow)
         np.clip(self.gain, 0.5, 2.0, out=self.gain)
 
-        motor = self.W_out @ (0.7 * self.rate + 0.3 * self.rate_slow)
+        motor = self.W_out @ (0.65 * self.rate + 0.35 * self.rate_slow)
         motor = np.tanh(motor).astype(np.float32)
         self.last_motor = motor
         self.t += DT_MS
@@ -132,7 +130,7 @@ class FruitFlyBrain:
         }
         return motor, info
 
-    def decide(self, motor: np.ndarray, threshold: float = 0.14) -> list:
+    def decide(self, motor: np.ndarray, threshold: float = 0.12) -> list:
         active = [MOTOR_NAMES[i] for i in range(min(len(MOTOR_NAMES), motor.size)) if motor[i] > threshold]
         pairs = [("forward", "back"), ("left", "right"), ("look_left", "look_right"),
                  ("look_up", "look_down"), ("scroll_up", "scroll_down")]
@@ -169,9 +167,9 @@ class FruitFlyBrain:
             self.W_out = data["W_out"].astype(np.float32)
             if "gain" in data and data["gain"].shape == self.gain.shape:
                 self.gain = data["gain"].astype(np.float32)
-            for c in range(N_COLS):
+            for c in range(min(N_COLS, 32)):
                 key = f"W_col_{c}"
-                if key in data and data[key].shape == self.W_cols[c].shape:
+                if key in data and c < len(self.W_cols) and data[key].shape == self.W_cols[c].shape:
                     self.W_cols[c] = data[key].astype(np.float32)
             return True
         except Exception:
