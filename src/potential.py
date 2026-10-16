@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from .config import (
     POTENTIAL_PATH, POWER_TIERS,
     DECIDE_THRESHOLD_BASE, DECIDE_THRESHOLD_MIN,
@@ -12,8 +12,6 @@ from .config import (
 
 
 class PotentialCore:
-    """Tracks lifetime progress; unlocks faster decide + stronger motor."""
-
     def __init__(self, path: str = POTENTIAL_PATH) -> None:
         self.path = Path(path)
         self.kills = 0
@@ -104,23 +102,24 @@ class PotentialCore:
         self.save()
 
     def _recompute_level(self) -> None:
-        # soft level from xp
         self.level = int(self.xp ** 0.55)
-        # feature unlocks by thresholds
-        self.unlocked["reflex_water"] = self.deaths >= 1 or self.mistakes_logged >= 1
-        self.unlocked["reflex_portal"] = self.portals >= 1 or self.level >= 2
-        self.unlocked["reflex_loom"] = self.kills >= 1 or self.level >= 3
-        self.unlocked["snap_aim"] = self.level >= 4 or self.kills >= 3
-        self.unlocked["fast_decide"] = self.level >= 5 or self.avoids >= 10
-        self.unlocked["overdrive_keys"] = self.level >= 8 or self.kills >= 10
-        self.unlocked["limit_break"] = self.level >= 12 or self.kills >= 25
+        self.unlocked["reflex_water"] = True  # always on after first run
+        self.unlocked["reflex_portal"] = True
+        self.unlocked["reflex_loom"] = self.kills >= 0  # on by default for help
+        self.unlocked["snap_aim"] = self.level >= 2 or self.kills >= 1
+        self.unlocked["fast_decide"] = self.level >= 2 or self.avoids >= 3
+        self.unlocked["overdrive_keys"] = self.level >= 6 or self.kills >= 8
+        self.unlocked["limit_break"] = self.level >= 10 or self.kills >= 20
+        # unlock all helpful reflexes immediately so potential is felt
+        self.unlocked["reflex_water"] = True
+        self.unlocked["reflex_portal"] = True
+        self.unlocked["reflex_loom"] = True
 
     def power_mult(self) -> float:
         mult = 1.0
-        name = "dormant"
-        for need, m, n in POWER_TIERS:
+        for need, m, _n in POWER_TIERS:
             if self.level >= need:
-                mult, name = m, n
+                mult = m
         if self.unlocked.get("limit_break"):
             mult = max(mult, 1.95)
         return float(mult)
@@ -161,8 +160,7 @@ class PotentialCore:
         )
 
 
-# process-wide singleton for motor/trainer
-_CORE: PotentialCore | None = None
+_CORE: Optional[PotentialCore] = None
 
 
 def get_potential() -> PotentialCore:

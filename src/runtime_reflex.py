@@ -1,6 +1,6 @@
 """Process-wide reflex force-actions + motor bias (read by motor every tick)."""
 from __future__ import annotations
-from typing import List, Set
+from typing import List, Set, Optional
 import numpy as np
 from .config import N_MOTOR
 
@@ -15,7 +15,7 @@ _LOOK_MAX = 185
 def publish(
     force: Set[str],
     bias,
-    notes: List[str] | None = None,
+    notes: Optional[List[str]] = None,
     threshold: float = 0.09,
     look_sens: float = 110.0,
     look_max: int = 185,
