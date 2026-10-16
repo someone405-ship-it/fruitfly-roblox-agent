@@ -1,4 +1,4 @@
-"""FruitFly Roblox Agent — fixed mouse, Roblox-only vision, instincts."""
+"""FruitFly Roblox Agent — circuit + reservoir + instincts."""
 from __future__ import annotations
 import sys
 import time
@@ -22,6 +22,8 @@ from .roblox_launcher import launch_roblox, is_roblox_running, find_roblox_playe
 from .trainer import Trainer
 from .motor_panel import MotorOutputPanel
 from .behavior import BehaviorLayer
+from .circuit import FlyCircuit
+from .circuit_panel import CircuitPanel
 from . import input_lock
 
 
@@ -45,7 +47,9 @@ class AgentWorker(QThread):
         self.logger = ActionLogger()
         self.trainer = Trainer(self.brain)
         self.behavior = BehaviorLayer()
+        self.circuit = FlyCircuit(seed=3)
         self.auto_focus = True
+        self.last_circuit = {}
         try:
             self.trainer.bootstrap_explore(180)
         except Exception:
@@ -68,8 +72,18 @@ class AgentWorker(QThread):
                 frame = self.vision.capture()
                 sensory = self.vision.encode(frame)
                 motor, info = self.brain.step(sensory)
-                motor, notes, binfo = self.behavior.modulate(motor, self.vision.last_meta)
+                meta = self.vision.last_meta
+                loom = float(meta.get("loom_score", 0.0))
+                motion = float(meta.get("motion", 0.0))
+                turn = float(motor[2] - motor[3]) if motor.size > 3 else 0.0
+                fwd_drive = max(0.0, float(motor[0]) * 0.5 + 0.35)
+                calm = max(0.0, 1.0 - loom - motion * 2)
+                cread = self.circuit.step(loom=loom, forward_drive=fwd_drive, turn=turn, calm=calm)
+                self.last_circuit = cread
+                cbias = self.circuit.motor_bias(cread)
+                motor, notes, binfo = self.behavior.modulate(motor, meta, circuit_bias=cbias)
                 info.update(binfo)
+                info.update(cread)
                 actions = self.brain.decide(motor, threshold=0.38)
                 actions = [a for a in actions if not a.startswith("look_")]
                 sent = self.motor.apply(actions, motor.tolist())
@@ -84,9 +98,10 @@ class AgentWorker(QThread):
                 self.motor_ready.emit({n: float(motor[i]) for i, n in enumerate(MOTOR_NAMES)}, actions)
                 if sent:
                     tag = ",".join(notes) if notes else ""
-                    self.log_ready.emit(f"-> {', '.join(sent)} | {tag} | spk={info['n_spikes']}")
+                    esc = " ESCAPE" if cread.get("escape") else ""
+                    self.log_ready.emit(f"-> {', '.join(sent)} | {tag}{esc} | spk={info['n_spikes']}")
                 self.status_ready.emit(
-                    f"WATCH ONLY — fear={binfo.get('fear',0):.2f} hunger={binfo.get('hunger',0):.2f}"
+                    f"WATCH ONLY — fear={binfo.get('fear',0):.2f} gf={cread.get('gf_rate',0):.2f}"
                 )
             except Exception as e:
                 self.log_ready.emit(f"error: {e}")
@@ -177,7 +192,7 @@ class MainWindow(QMainWindow):
         header.addWidget(title)
         header.addStretch()
         root.addLayout(header)
-        self.setup_lbl = QLabel("SETTING UP… launching Roblox and loading brain")
+        self.setup_lbl = QLabel("SETTING UP…")
         self.setup_lbl.setObjectName("setupLbl")
         self.setup_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(self.setup_lbl)
@@ -215,12 +230,14 @@ class MainWindow(QMainWindow):
         ml = QVBoxLayout(mid)
         self.motor_panel = MotorOutputPanel()
         ml.addWidget(self.motor_panel)
+        self.circuit_panel = CircuitPanel()
+        ml.addWidget(self.circuit_panel)
         split.addWidget(mid)
         right = QFrame(); right.setObjectName("panel")
         rl = QVBoxLayout(right)
         self.fly_kb = FlyKeyboardWidget()
         rl.addWidget(self.fly_kb)
-        self.stats_lbl = QLabel("waiting for setup")
+        self.stats_lbl = QLabel("waiting")
         rl.addWidget(self.stats_lbl)
         rl.addStretch()
         split.addWidget(right)
@@ -228,10 +245,8 @@ class MainWindow(QMainWindow):
         root.addWidget(split, 1)
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        self.status.showMessage("setup in progress…")
 
     def _run_setup(self) -> None:
-        self.log_view.append("setup: locating Roblox…")
         path = find_roblox_player()
         if path:
             self.log_view.append(f"setup: found {path}")
@@ -239,7 +254,7 @@ class MainWindow(QMainWindow):
         self.log_view.append(f"setup: {msg}")
         self._roblox_ok = bool(ok) or is_roblox_running()
         if not self._roblox_ok:
-            self.setup_lbl.setText("Waiting for Roblox… open Roblox once if needed")
+            self.setup_lbl.setText("Waiting for Roblox…")
             QTimer.singleShot(2500, self._recheck_roblox)
             return
         self._try_finish_setup()
@@ -247,14 +262,12 @@ class MainWindow(QMainWindow):
     def _recheck_roblox(self) -> None:
         if is_roblox_running():
             self._roblox_ok = True
-            self.log_view.append("setup: Roblox detected")
             self._try_finish_setup()
         else:
             QTimer.singleShot(2500, self._recheck_roblox)
 
     def _on_worker_ready(self) -> None:
         self._worker_ok = True
-        self.log_view.append("setup: brain worker ready")
         self._try_finish_setup()
 
     def _try_finish_setup(self) -> None:
@@ -263,14 +276,12 @@ class MainWindow(QMainWindow):
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("READY — press START. You only watch; the fly drives Roblox.")
+        self.setup_lbl.setText("READY — START. Circuit: loom→GF escape, DNp09 walk, MDN reverse.")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.status.showMessage("ready")
-        self.log_view.append("setup complete")
 
     def _on_start(self) -> None:
         if not self._setup_done or self._flying:
@@ -281,7 +292,7 @@ class MainWindow(QMainWindow):
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — click this app then STOP/F9 to unlock. Keep Roblox visible.")
+        self.watch_lbl.setText("WATCH ONLY — STOP/F9 unlocks. Keep Roblox visible.")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -320,11 +331,13 @@ class MainWindow(QMainWindow):
         self.motor_panel.set_motor(d, a)
 
     def _on_stats(self, info: dict) -> None:
+        self.circuit_panel.set_rates(info)
         self.stats_lbl.setText(
             f"t={info.get('t_ms',0):.0f}ms steps={info.get('steps',0)}\n"
             f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
             f"fear={info.get('fear',0):.2f} hunger={info.get('hunger',0):.2f}\n"
-            f"food={info.get('food_score',0):.2f} lock={'ON' if input_lock.is_locked() else 'off'}"
+            f"loom={info.get('loom_score',0):.2f} gf={info.get('gf_rate',0):.2f}\n"
+            f"lock={'ON' if input_lock.is_locked() else 'off'}"
         )
 
     def closeEvent(self, e) -> None:
