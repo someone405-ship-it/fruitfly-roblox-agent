@@ -209,6 +209,11 @@ class MainWindow(QMainWindow):
         self.btn_stop.setVisible(False)
         self.btn_stop.setEnabled(False)
         ctrl.addWidget(self.btn_stop)
+        self.btn_scare = QPushButton("SCARE")
+        self.btn_scare.setToolTip("Inject fear / GF-style startle")
+        self.btn_scare.clicked.connect(self._on_scare)
+        self.btn_scare.setVisible(False)
+        ctrl.addWidget(self.btn_scare)
         ctrl.addStretch()
         root.addLayout(ctrl)
         self.watch_lbl = QLabel("")
@@ -276,10 +281,11 @@ class MainWindow(QMainWindow):
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("READY — START. Circuit: loom→GF escape, DNp09 walk, MDN reverse.")
+        self.setup_lbl.setText("READY — START. SCARE = startle. F9 = emergency stop.")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
+        self.btn_scare.setVisible(True)
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
 
@@ -303,6 +309,13 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.watch_lbl.setVisible(False)
+
+    def _on_scare(self) -> None:
+        try:
+            self.worker.behavior.scare()
+            self.log_view.append("SCARE — fear spike / alert")
+        except Exception as e:
+            self.log_view.append(f"scare failed: {e}")
 
     def _on_emergency(self) -> None:
         self.worker.emergency()
@@ -335,7 +348,7 @@ class MainWindow(QMainWindow):
         self.stats_lbl.setText(
             f"t={info.get('t_ms',0):.0f}ms steps={info.get('steps',0)}\n"
             f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
-            f"fear={info.get('fear',0):.2f} hunger={info.get('hunger',0):.2f}\n"
+            f"fear={info.get('fear',0):.2f} arousal={info.get('arousal',0):.2f}\n"
             f"loom={info.get('loom_score',0):.2f} gf={info.get('gf_rate',0):.2f}\n"
             f"lock={'ON' if input_lock.is_locked() else 'off'}"
         )
