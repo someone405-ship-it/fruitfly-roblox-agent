@@ -4,7 +4,6 @@ import sys
 
 
 def main() -> None:
-    # install missing packages first (ignore ones already present)
     try:
         from src.deps import ensure_packages
         ok = ensure_packages(print)
@@ -12,6 +11,12 @@ def main() -> None:
             print("WARNING: some packages still missing — trying to start anyway")
     except Exception as e:
         print(f"deps check skipped: {e}")
+
+    try:
+        from src.config import N_HIDDEN
+        print(f"FruitFly · {N_HIDDEN} neurons (FlyWire-scale) · loading…")
+    except Exception:
+        pass
 
     from src.main import main as app_main
     app_main()
