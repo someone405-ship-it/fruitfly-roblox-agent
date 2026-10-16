@@ -1,8 +1,7 @@
-"""Autonomy + kill loot + death hurt + PORTAL BEFORE COMBAT."""
+"""Autonomy — portal-first, leave/join self, explore, combat gate."""
 from __future__ import annotations
 from typing import Dict, Any, List
 import time
-import math
 import numpy as np
 from .config import MOTOR_NAMES, N_MOTOR
 from .instincts import InstinctCore
@@ -11,17 +10,17 @@ from .loot import KillLootSystem
 CHAR_KITS: Dict[str, Dict[str, Any]] = {
     "deadpool": {
         "label": "Deadpool", "q": "Immortal Dash", "e": "Air Slash", "r": "Deadpool Combo",
-        "q_gap": 1.4, "e_gap": 1.1, "r_gap": 2.1, "aggro": 0.95, "dodge_bias": 0.85, "melee": 0.85,
+        "q_gap": 1.2, "e_gap": 1.0, "r_gap": 1.9, "aggro": 0.95, "dodge_bias": 0.85, "melee": 0.88,
         "say_pick": "Deadpool. messy and fast.",
     },
     "batman": {
         "label": "Batman", "q": "Grapple", "e": "Batarang", "r": "Smoke Bomb",
-        "q_gap": 1.3, "e_gap": 1.0, "r_gap": 2.4, "aggro": 0.7, "dodge_bias": 1.1, "melee": 0.7,
+        "q_gap": 1.2, "e_gap": 0.95, "r_gap": 2.2, "aggro": 0.7, "dodge_bias": 1.1, "melee": 0.75,
         "say_pick": "Batman. quiet and precise.",
     },
     "war_machine": {
         "label": "War Machine", "q": "Jet Boost", "e": "Missile", "r": "Heavy Barrage",
-        "q_gap": 1.3, "e_gap": 1.2, "r_gap": 2.0, "aggro": 1.1, "dodge_bias": 0.7, "melee": 0.9,
+        "q_gap": 1.15, "e_gap": 1.1, "r_gap": 1.85, "aggro": 1.1, "dodge_bias": 0.7, "melee": 0.92,
         "say_pick": "War Machine. heavy pressure.",
     },
 }
@@ -33,27 +32,22 @@ class BehaviorLayer:
         self.instinct = InstinctCore(seed=11)
         self.loot = KillLootSystem(seed=21)
         self.fear = self.pain = self.anger = self.weakness = 0.0
-        self.curiosity = 0.8
+        self.curiosity = 0.85
         self.arousal = 0.5
         self.pending_chat = None
         self.pending_line = None
         self.idx = {n: i for i, n in enumerate(MOTOR_NAMES)}
         self.manual_scare = False
-        self._food_seen = False
-        self._danger_seen = False
-        self._danger_now = False
         self._last_chat_at = 0.0
         self.mode = "explore"
         self._flee_until = 0.0
-        self.flee_seconds = 0.5
-        self.fight_seconds = 5.0
         self.cd_q = self.cd_e = self.cd_r = 0.0
         self._rot = 0
         self._next_rot_at = 0.0
         self.character = "deadpool"
         self._char_i = 0
         self._last_switch = 0.0
-        self.switch_cooldown = 16.0
+        self.switch_cooldown = 14.0
         self._last_say = 0.0
         self._hist_motion: List[float] = []
         self._hist_cx: List[float] = []
@@ -63,11 +57,17 @@ class BehaviorLayer:
         self.lock_in = False
         self.kit = CHAR_KITS[self.character]
         self.goal = "explore"
-        self.features_active = 80
+        self.features_active = 96
         self._last_kill_at = 0.0
         self._last_death_at = 0.0
         self._pending_kill_notes: List[str] = []
         self._portal_seek_streak = 0
+        # leave / join autonomy
+        self._leave_until = 0.0
+        self._join_phase = 0
+        self._join_until = 0.0
+        self._bored_leave_at = time.time() + 90.0
+        self._last_escape_at = 0.0
 
     def _apply_char(self, name: str) -> None:
         if name not in CHAR_KITS:
@@ -94,12 +94,12 @@ class BehaviorLayer:
         self.pain = min(1.0, self.pain + 0.35)
         self.manual_scare = True
         self.mode = "flee"
-        self._flee_until = time.time() + self.flee_seconds
+        self._flee_until = time.time() + 0.5
         self._say("hurt — reset then lock in.")
 
     def _say(self, line: str) -> None:
         now = time.time()
-        if now - self._last_say < 1.2 and self.pending_line:
+        if now - self._last_say < 1.0 and self.pending_line:
             return
         self.pending_line = line
         self._last_say = now
@@ -121,12 +121,11 @@ class BehaviorLayer:
             m[self.idx[n]] = 0.0
 
     def _zero_combat(self, m):
-        """Block fight motors until portal is done."""
         m[self.idx["secondary"]] = 0.0
         self._zero_kit(m)
 
     def _fire(self, m, name: str) -> None:
-        m[self.idx[name]] = 0.95
+        m[self.idx[name]] = 0.98
 
     def _kit(self, m, now: float, fighting: bool):
         notes = []
@@ -145,18 +144,18 @@ class BehaviorLayer:
             elif i == 1: self.cd_e = now + gaps[1]
             else: self.cd_r = now + gaps[2]
             self._rot = (i + 1) % 3
-            self._next_rot_at = now + 0.32
+            self._next_rot_at = now + 0.28
         return notes
 
-    def _steer(self, m, cx: float, strength: float = 0.7) -> None:
+    def _steer(self, m, cx: float, strength: float = 0.8) -> None:
         err = cx - 0.5
-        if err > 0.04:
-            m[self.idx["right"]] += strength * min(1.0, err * 3.5)
-            m[self.idx["look_right"]] += 0.95 * min(1.0, err * 3.8)
+        if err > 0.035:
+            m[self.idx["right"]] += strength * min(1.0, err * 3.8)
+            m[self.idx["look_right"]] += 1.0 * min(1.0, err * 4.0)
             m[self.idx["left"]] = 0.0
-        elif err < -0.04:
-            m[self.idx["left"]] += strength * min(1.0, -err * 3.5)
-            m[self.idx["look_left"]] += 0.95 * min(1.0, -err * 3.8)
+        elif err < -0.035:
+            m[self.idx["left"]] += strength * min(1.0, -err * 3.8)
+            m[self.idx["look_left"]] += 1.0 * min(1.0, -err * 4.0)
             m[self.idx["right"]] = 0.0
 
     def _predict_and_dodge(self, m, meta, now):
@@ -173,16 +172,16 @@ class BehaviorLayer:
             return notes
         dm = self._hist_motion[-1] - self._hist_motion[0]
         pred = loom * 0.5 + threat * 0.4 + max(0.0, dm) * 2.0
-        if pred * float(self.kit.get("dodge_bias", 1.0)) < 0.3 or now - self._last_dodge < 0.28:
+        if pred * float(self.kit.get("dodge_bias", 1.0)) < 0.28 or now - self._last_dodge < 0.22:
             return notes
         self._last_dodge = now
         side = 1.0 if (self._hist_cx[-1] - self._hist_cx[0]) >= 0 else -1.0
         if side > 0:
-            m[self.idx["left"]] += 0.95; notes.append("dodge_left")
+            m[self.idx["left"]] += 0.98; notes.append("dodge_left")
         else:
-            m[self.idx["right"]] += 0.95; notes.append("dodge_right")
+            m[self.idx["right"]] += 0.98; notes.append("dodge_right")
         notes.append("predict_dodge")
-        self.anger = min(1.0, self.anger + 0.15)
+        self.anger = min(1.0, self.anger + 0.12)
         return notes
 
     def modulate(self, motor, meta, circuit_bias=None):
@@ -194,7 +193,7 @@ class BehaviorLayer:
         if circuit_bias is not None:
             cb = np.asarray(circuit_bias, dtype=np.float32).ravel()
             n = min(N_MOTOR, cb.size)
-            m[:n] = 0.25 * m[:n] + 0.75 * cb[:n]
+            m[:n] = 0.22 * m[:n] + 0.78 * cb[:n]
 
         now = time.time()
         motion = float(meta.get("motion", 0.0))
@@ -215,58 +214,40 @@ class BehaviorLayer:
         if portal_passed or portal_event:
             self.instinct.in_arena = True
             self.instinct.portal_locked_until = now + 90.0
-            self._say("portal — entering arena.")
+            self._say("portal — arena.")
             self.instinct.reward_goal("portal", True)
+            self._bored_leave_at = now + 120.0
 
-        if kill_event and (now - self._last_kill_at) > 1.2:
+        if kill_event and (now - self._last_kill_at) > 1.0:
             self._last_kill_at = now
             ev = self.loot.on_kill()
-            self._pending_kill_notes = ["kill", f"loot:{ev['drop']}", f"food+{ev['food_gain']}"]
+            self._pending_kill_notes = ["kill", f"loot:{ev['drop']}"]
             if ev["heal"] > 0:
                 self.pain = max(0.0, self.pain - ev["heal"])
-            self.anger = min(1.0, self.anger + 0.15)
-            self.instinct.confidence = min(1.0, self.instinct.confidence + 0.05)
-            self.instinct.aggression = min(0.98, self.instinct.aggression + 0.02)
-            self._say(f"kill → {ev['drop']}  food={ev['food_total']}")
-            chat_bits = {
-                "food": "food", "food_x2": "food food", "food_feast": "feast",
-                "speed_candy": "speed", "rage_candy": "rage", "heal_bit": "heal",
-                "shield_bit": "shield", "jackpot": "JACKPOT",
-            }
-            if now - self._last_chat_at > 4.0:
-                self.pending_chat = chat_bits.get(ev["drop"], "food")
-                self._last_chat_at = now
+            self.anger = min(1.0, self.anger + 0.12)
+            self._say(f"kill → {ev['drop']}")
             self.instinct.reward_goal("fight", True)
-            self.instinct.reward_goal("hunt", True)
 
         if death_event and (now - self._last_death_at) > 2.0:
             self._last_death_at = now
             self._deaths += 1
-            self.pain = min(1.0, self.pain + 0.55)
-            self.fear = min(1.0, self.fear + 0.4)
-            self.weakness = min(1.0, self.weakness + 0.35)
-            self.anger = min(1.0, self.anger + 0.2)
-            self._hits += 1
-            lost = min(2, self.loot.food)
-            if lost:
-                self.loot.food -= lost
-            self._pending_kill_notes = list(self._pending_kill_notes) + ["death", "hurt", f"food_lost:{lost}"]
-            self._say(f"died — hurt. food lost={lost}. pain up.")
-            self.instinct.confidence = max(0.1, self.instinct.confidence - 0.08)
-            self.mode = "flee"
-            self._flee_until = now + 1.2
-            # death often dumps back to lobby — require portal again
+            self.pain = min(1.0, self.pain + 0.5)
+            self.fear = min(1.0, self.fear + 0.35)
+            self._say("died — leaving / rejoin.")
             self.instinct.in_arena = False
+            # after death: leave menu path
+            self._leave_until = now + 2.5
+            self._join_until = now + 12.0
+            self._join_phase = 0
 
         hit = max(0.0, loom - 0.48) + max(0.0, threat - 0.38)
         if hit > 0 and self.instinct.in_arena:
-            self.pain = min(1.0, self.pain + hit * 0.5)
-            self.anger = min(1.0, self.anger + hit * 0.42)
-            self.weakness = min(1.0, self.weakness + hit * 0.22)
+            self.pain = min(1.0, self.pain + hit * 0.45)
+            self.anger = min(1.0, self.anger + hit * 0.4)
             self._hits += 1
         else:
-            self.pain = max(0.0, self.pain - 0.028)
-            self.anger = max(0.0, self.anger - 0.016)
+            self.pain = max(0.0, self.pain - 0.03)
+            self.anger = max(0.0, self.anger - 0.018)
             self.weakness = max(0.0, self.weakness - 0.01)
 
         self.instinct.observe_vision(meta, motion)
@@ -282,9 +263,59 @@ class BehaviorLayer:
         in_arena = bool(self.instinct.in_arena)
         notes.append("in_arena" if in_arena else "need_portal")
 
+        # voluntary leave when bored / high pain
+        if in_arena and now > self._bored_leave_at and (self.pain > 0.55 or self.instinct.boredom > 0.7):
+            self._leave_until = now + 2.0
+            self._join_until = now + 14.0
+            self._join_phase = 0
+            self.instinct.in_arena = False
+            self._bored_leave_at = now + 150.0
+            self._say("leaving — find new game.")
+
+        # LEAVE sequence: ESC
+        if now < self._leave_until:
+            self.mode = "leave"
+            self._zero_combat(m)
+            if now - self._last_escape_at > 0.55:
+                m[self.idx["escape"]] = 0.98
+                self._last_escape_at = now
+            notes += ["leave", "escape_menu"]
+            goal = "leave"
+            self.goal = goal
+            notes.append(f"goal:{goal}")
+            snap = self.instinct.snapshot()
+            info = self._info(notes, meta, motion, food, loom, water, lobby, threat, rail, portal, in_arena, snap)
+            return np.clip(m, -1, 1), notes, info
+
+        # JOIN / browse sequence: scroll + select
+        if now < self._join_until and not in_arena:
+            self.mode = "join"
+            self._zero_combat(m)
+            phase = int((now * 2.2) % 8)
+            if phase in (0, 1, 2):
+                m[self.idx["scroll_down"]] = 0.95
+                notes.append("scroll_down")
+            elif phase in (3, 4):
+                m[self.idx["ui_down"]] = 0.9
+                notes.append("ui_scroll")
+            elif phase == 5:
+                m[self.idx["ui_select"]] = 0.95
+                notes.append("ui_select")
+            elif phase == 6:
+                m[self.idx["secondary"]] = 0.7  # click join
+                notes.append("click_join")
+            notes += ["join_game", "self_join", "browse"]
+            if lobby > 0.3:
+                notes.append("lobby")
+            goal = "join"
+            self.goal = goal
+            notes.append(f"goal:{goal}")
+            snap = self.instinct.snapshot()
+            info = self._info(notes, meta, motion, food, loom, water, lobby, threat, rail, portal, in_arena, snap)
+            return np.clip(m, -1, 1), notes, info
+
         goal = self.instinct.pick_goal(meta, self.pain, self.anger, self.mode)
 
-        # HARD PORTAL GATE — override any fight urge outside arena
         if not in_arena:
             if portal > 0.08:
                 goal = "portal"
@@ -293,7 +324,8 @@ class BehaviorLayer:
             elif rail > 0.25:
                 goal = "rail"
             else:
-                goal = "explore" if goal in ("fight", "hunt", "patrol") else goal
+                if goal in ("fight", "hunt", "patrol"):
+                    goal = "explore"
             self._zero_combat(m)
 
         if lobby > 0.5 and threat < 0.25 and portal < 0.15 and not in_arena:
@@ -303,116 +335,111 @@ class BehaviorLayer:
 
         self.goal = goal
         notes.append(f"goal:{goal}")
-
         allow_ui = False
+
         if goal == "portal":
             self.mode = "portal"
             self._portal_seek_streak += 1
-            m[self.idx["forward"]] = 0.98
-            m[self.idx["sprint"]] = 0.75
-            self._steer(m, portal_cx, 1.15)
-            # look at portal vertically a bit
+            m[self.idx["forward"]] = 0.99
+            m[self.idx["sprint"]] = 0.82
+            self._steer(m, portal_cx, 1.2)
             pcy = float(meta.get("portal_cy", 0.5))
             if pcy < 0.4:
-                m[self.idx["look_up"]] += 0.55
+                m[self.idx["look_up"]] += 0.6
             elif pcy > 0.65:
-                m[self.idx["look_down"]] += 0.45
-            m[self.idx["rmb_look"]] = 0.7
+                m[self.idx["look_down"]] += 0.5
+            m[self.idx["rmb_look"]] = 0.8
             self._zero_combat(m)
             notes += ["seek_portal", "portal_safe"]
             if portal > 0.35:
                 notes.append("portal_close")
-                # slight jump into portal sometimes
-                if int(now * 4) % 5 == 0:
-                    m[self.idx["jump"]] = 0.7
+                if int(now * 5) % 4 == 0:
+                    m[self.idx["jump"]] = 0.75
         elif goal == "rail":
             self.mode = "rail"
-            m[self.idx["forward"]] = 0.92
-            m[self.idx["sprint"]] = 0.55
-            self._steer(m, rail_cx, 0.95)
+            m[self.idx["forward"]] = 0.94
+            m[self.idx["sprint"]] = 0.6
+            self._steer(m, rail_cx, 1.0)
             self._zero_combat(m)
             notes += ["rail"]
         elif goal == "flee" or water > 0.55 or (now < self._flee_until):
             self.mode = "flee"
             m[self.idx["forward"]] = 0.0
-            m[self.idx["back"]] = 0.75
-            m[self.idx["sprint"]] = 0.55
+            m[self.idx["back"]] = 0.8
+            m[self.idx["sprint"]] = 0.6
             if water > 0.4:
-                self._steer(m, 1.0 - float(meta.get("water_cx", 0.5)), 0.85)
+                self._steer(m, 1.0 - float(meta.get("water_cx", 0.5)), 0.9)
                 notes += ["water_death"]
             notes += ["flee"]
             self._zero_kit(m)
         elif goal in ("fight", "hunt") and in_arena:
             self.mode = "fight"
             self.lock_in = True
-            self._portal_seek_streak = 0
-            push = (0.88 + 0.4 * self.anger) * max(float(self.kit["aggro"]), 0.9)
+            push = (0.9 + 0.4 * self.anger) * max(float(self.kit["aggro"]), 0.9)
             m[self.idx["forward"]] = min(1.0, push)
-            m[self.idx["sprint"]] = min(1.0, 0.7 + 0.25 * self.anger)
-            m[self.idx["secondary"]] = max(float(self.kit["melee"]), 0.88)
-            if threat > 0.3:
-                if int(now * 3) % 2 == 0:
-                    m[self.idx["left"]] += 0.4
+            m[self.idx["sprint"]] = min(1.0, 0.75 + 0.25 * self.anger)
+            m[self.idx["secondary"]] = max(float(self.kit["melee"]), 0.9)
+            if threat > 0.28:
+                if int(now * 4) % 2 == 0:
+                    m[self.idx["left"]] += 0.45
                 else:
-                    m[self.idx["right"]] += 0.4
-            m[self.idx["rmb_look"]] = 0.55
+                    m[self.idx["right"]] += 0.45
+            m[self.idx["rmb_look"]] = 0.65
             notes += ["fight", "attack", "lock_in"]
             notes += self._kit(m, now, True)
             notes += self._predict_and_dodge(m, meta, now)
         elif goal in ("browse", "rejoin") or (lobby > 0.55 and not in_arena):
             self.mode = "browse"
             allow_ui = True
-            m[self.idx["forward"]] = 0.12
-            phase = int((now * 1.4) % 6)
+            m[self.idx["forward"]] = 0.1
+            phase = int((now * 1.6) % 7)
             self._zero_combat(m)
             if phase in (0, 1):
+                m[self.idx["scroll_down"]] = 0.9; notes.append("scroll_down")
+            elif phase in (2, 3):
                 m[self.idx["ui_down"]] = 0.9; notes.append("ui_scroll")
-            elif phase == 3:
+            elif phase == 4:
                 m[self.idx["ui_select"]] = 0.9; notes.append("ui_select")
-            notes += ["browse", "join_intent"]
+            elif phase == 5:
+                m[self.idx["secondary"]] = 0.6; notes.append("click_join")
+            notes += ["browse", "join_intent", "self_join"]
         elif goal == "parkour":
-            m[self.idx["forward"]] = 0.88
-            m[self.idx["sprint"]] = 0.75
-            m[self.idx["jump"]] = 0.8 if int(now * 4) % 3 == 0 else 0.1
+            m[self.idx["forward"]] = 0.9
+            m[self.idx["sprint"]] = 0.8
+            m[self.idx["jump"]] = 0.85 if int(now * 5) % 3 == 0 else 0.1
             notes += ["parkour"]
             if not in_arena:
                 self._zero_combat(m)
         else:
             self.mode = "explore"
-            m[self.idx["forward"]] = 0.78 + 0.15 * self.curiosity
-            m[self.idx["sprint"]] = 0.5
-            # wander look while seeking portal path
+            m[self.idx["forward"]] = 0.82 + 0.15 * self.curiosity
+            m[self.idx["sprint"]] = 0.55
             if not in_arena:
                 lx, ly = self.instinct.look_wander()
                 if lx > 0:
                     m[self.idx["look_right"]] += abs(lx)
                 else:
                     m[self.idx["look_left"]] += abs(lx)
-                m[self.idx["rmb_look"]] = 0.45
+                if ly > 0:
+                    m[self.idx["look_up"]] += abs(ly) * 0.5
+                else:
+                    m[self.idx["look_down"]] += abs(ly) * 0.5
+                m[self.idx["rmb_look"]] = 0.55
                 self._zero_combat(m)
-                notes += ["explore", "wander", "hunting_portal"]
+                notes += ["explore", "wander", "hunting_portal", "explore_world"]
             else:
-                notes += ["explore", "wander"]
+                notes += ["explore", "wander", "explore_world"]
 
         buffs = self.loot.active_buffs(now)
         if buffs["speed"] > 0:
-            m[self.idx["sprint"]] = min(1.0, float(m[self.idx["sprint"]]) + 0.35)
-            m[self.idx["forward"]] = min(1.0, float(m[self.idx["forward"]]) + 0.12)
+            m[self.idx["sprint"]] = min(1.0, float(m[self.idx["sprint"]]) + 0.4)
             notes.append("buff_speed")
         if buffs["rage"] > 0 and in_arena:
-            m[self.idx["secondary"]] = min(1.0, max(float(m[self.idx["secondary"]]), 0.9))
+            m[self.idx["secondary"]] = min(1.0, max(float(m[self.idx["secondary"]]), 0.92))
             notes.append("buff_rage")
-        if buffs["shield"] > 0:
-            self.pain = max(0.0, self.pain - 0.01)
-            notes.append("buff_shield")
-        if self.pain > 0.55 and self.loot.food > 0 and self.loot.spend_food(1):
-            self.pain = max(0.0, self.pain - 0.25)
-            notes.append("eat_food")
-            self._say(f"ate food. bag={self.loot.food}")
 
         kills = int(self.loot.kills)
-        power_mult = 1.0
-        power_name = "dormant"
+        power_mult, power_name = 1.0, "dormant"
         for need, mult, name in ((0, 1.0, "dormant"), (3, 1.08, "awake"), (8, 1.16, "charged"),
                                   (15, 1.28, "ascendant"), (25, 1.42, "unlocked"), (40, 1.55, "ascended")):
             if kills >= need:
@@ -422,19 +449,17 @@ class BehaviorLayer:
                 m[self.idx[ch]] = float(np.clip(m[self.idx[ch]] * power_mult, -1.5, 1.5))
             notes.append(f"power:{power_name}")
 
-        # danger only when truly threatening AND not looking at a portal
-        self._danger_now = max(threat, loom * 0.9) > 0.45 and portal < 0.2 and in_arena
-        if self._danger_now:
-            notes.append("danger")
-
         if not allow_ui:
             self._zero_junk(m)
-        else:
-            for n in ("emote", "crouch", "chat_toggle"):
-                m[self.idx[n]] = 0.0
 
         snap = self.instinct.snapshot()
-        info = {
+        info = self._info(notes, meta, motion, food, loom, water, lobby, threat, rail, portal, in_arena, snap)
+        info["power"] = power_name
+        info["power_mult"] = power_mult
+        return np.clip(m, -1, 1), notes, info
+
+    def _info(self, notes, meta, motion, food, loom, water, lobby, threat, rail, portal, in_arena, snap):
+        return {
             "fear": self.fear, "pain": self.pain, "anger": self.anger,
             "weakness": self.weakness, "curiosity": self.curiosity, "arousal": self.arousal,
             "notes": notes, "food_score": food, "motion": motion, "loom_score": loom,
@@ -443,9 +468,7 @@ class BehaviorLayer:
             "combat_mode": self.mode, "character": self.character,
             "char_label": self.kit["label"], "rot": self._rot,
             "hits": self._hits, "lock_in": self.lock_in, "goal": self.goal,
-            "features": self.features_active, "power": power_name, "power_mult": power_mult,
-            "deaths": self._deaths, "in_arena": in_arena,
+            "features": self.features_active, "deaths": self._deaths, "in_arena": in_arena,
             **{f"drv_{k}": v for k, v in snap.items() if isinstance(v, (int, float, bool))},
             **{f"loot_{k}": v for k, v in self.loot.snapshot().items() if isinstance(v, (int, float, str))},
         }
-        return np.clip(m, -1, 1), notes, info
