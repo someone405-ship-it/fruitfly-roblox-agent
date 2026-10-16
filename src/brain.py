@@ -1,15 +1,16 @@
-"""LIF reservoir brain — 12288 units, power-iteration spectral radius."""
+"""Block-sparse mega LIF brain — 65536 units in 8 columns (near-full fly scale)."""
 from __future__ import annotations
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List
 import numpy as np
 from .config import (
-    N_SENSORY, N_HIDDEN, N_MOTOR, MOTOR_NAMES, DT_MS, TAU_MEM, TAU_SLOW,
-    V_THRESH, V_RESET, NOISE_SCALE, SPARSITY, SPECTRAL_RADIUS, WEIGHTS_PATH,
+    N_SENSORY, N_HIDDEN, N_MOTOR, N_COLS, COL_SIZE, MOTOR_NAMES,
+    DT_MS, TAU_MEM, TAU_SLOW, V_THRESH, V_RESET, NOISE_SCALE,
+    SPARSITY, INTER_SPARSITY, SPECTRAL_RADIUS, WEIGHTS_PATH,
 )
 
 
-def _spectral_radius_estimate(W: np.ndarray, iters: int = 35) -> float:
+def _spectral_radius_estimate(W: np.ndarray, iters: int = 28) -> float:
     n = W.shape[0]
     if n == 0:
         return 0.0
@@ -24,19 +25,45 @@ def _spectral_radius_estimate(W: np.ndarray, iters: int = 35) -> float:
 
 
 class FruitFlyBrain:
+    """8×8192 block-sparse reservoir ≈ 65k neurons, RAM-friendly."""
+
     def __init__(self, seed: int = 0) -> None:
         self.rng = np.random.default_rng(seed)
         rng = self.rng
-        self.W_in = rng.normal(0.0, 0.32, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
-        W = rng.normal(0.0, 1.0, size=(N_HIDDEN, N_HIDDEN)).astype(np.float32)
-        W *= (rng.random(W.shape) < SPARSITY).astype(np.float32)
-        signs = np.where(rng.random(N_HIDDEN) < 0.5, 1.0, -1.0).astype(np.float32)
-        W *= signs[None, :]
-        radius = _spectral_radius_estimate(W)
-        if radius > 1e-6:
-            W *= np.float32(SPECTRAL_RADIUS / radius)
-        self.W_rec = W
-        self.W_out = rng.normal(0.0, 0.20, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
+        self.n_cols = N_COLS
+        self.col_size = COL_SIZE
+        self.n_hidden = N_HIDDEN
+
+        # Input projects to all columns
+        self.W_in = rng.normal(0.0, 0.28, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
+
+        # Within-column sparse recurrence
+        self.W_cols: List[np.ndarray] = []
+        for c in range(N_COLS):
+            W = rng.normal(0.0, 1.0, size=(COL_SIZE, COL_SIZE)).astype(np.float32)
+            W *= (rng.random(W.shape) < SPARSITY).astype(np.float32)
+            signs = np.where(rng.random(COL_SIZE) < 0.5, 1.0, -1.0).astype(np.float32)
+            W *= signs[None, :]
+            radius = _spectral_radius_estimate(W)
+            if radius > 1e-6:
+                W *= np.float32(SPECTRAL_RADIUS / radius)
+            self.W_cols.append(W)
+
+        # Sparse inter-column bridges (small dense maps col→col)
+        self.W_inter = []
+        for c in range(N_COLS):
+            row = []
+            for d in range(N_COLS):
+                if c == d:
+                    row.append(None)
+                else:
+                    M = rng.normal(0.0, 0.15, size=(COL_SIZE, COL_SIZE)).astype(np.float32)
+                    M *= (rng.random(M.shape) < INTER_SPARSITY).astype(np.float32)
+                    row.append(M)
+            self.W_inter.append(row)
+
+        self.W_out = rng.normal(0.0, 0.18, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
+
         self.v = np.zeros(N_HIDDEN, dtype=np.float32)
         self.v_slow = np.zeros(N_HIDDEN, dtype=np.float32)
         self.spikes = np.zeros(N_HIDDEN, dtype=np.float32)
@@ -61,8 +88,20 @@ class FruitFlyBrain:
             n = min(s.size, N_SENSORY)
             out[:n] = s[:n]
             s = out
-        I = self.W_in @ s + self.W_rec @ (self.spikes * self.gain)
-        I += 0.14 * self.v_slow
+
+        I = self.W_in @ s
+        # column recurrence + inter bridges
+        for c in range(self.n_cols):
+            sl = slice(c * self.col_size, (c + 1) * self.col_size)
+            sp = self.spikes[sl] * self.gain[sl]
+            I[sl] += self.W_cols[c] @ sp
+            for d in range(self.n_cols):
+                M = self.W_inter[c][d]
+                if M is not None:
+                    sdl = slice(d * self.col_size, (d + 1) * self.col_size)
+                    I[sl] += M @ (self.spikes[sdl] * self.gain[sdl])
+
+        I += 0.12 * self.v_slow
         I += NOISE_SCALE * self.rng.standard_normal(N_HIDDEN).astype(np.float32)
         self.v += (-self.v + I) * (DT_MS / TAU_MEM)
         self.v_slow += (-self.v_slow + self.v) * (DT_MS / TAU_SLOW)
@@ -72,10 +111,11 @@ class FruitFlyBrain:
         n_sp = int(self.spikes.sum())
         self.total_spikes += n_sp
         self.steps += 1
-        self.rate = 0.80 * self.rate + 0.20 * self.spikes
-        self.rate_slow = 0.96 * self.rate_slow + 0.04 * self.spikes
+        self.rate = 0.78 * self.rate + 0.22 * self.spikes
+        self.rate_slow = 0.95 * self.rate_slow + 0.05 * self.spikes
         self.gain *= 1.0 + 0.002 * (0.05 - self.rate_slow)
         np.clip(self.gain, 0.5, 2.0, out=self.gain)
+
         motor = self.W_out @ (0.7 * self.rate + 0.3 * self.rate_slow)
         motor = np.tanh(motor).astype(np.float32)
         self.last_motor = motor
@@ -86,15 +126,16 @@ class FruitFlyBrain:
             "mean_rate_slow": float(self.rate_slow.mean()),
             "mean_gain": float(self.gain.mean()),
             "total_spikes": self.total_spikes, "steps": self.steps,
-            "n_hidden": N_HIDDEN,
+            "n_hidden": N_HIDDEN, "n_cols": N_COLS,
             "motor": {MOTOR_NAMES[i]: float(motor[i]) for i in range(min(N_MOTOR, motor.size))},
             "motor_vec": motor.copy(),
         }
         return motor, info
 
-    def decide(self, motor: np.ndarray, threshold: float = 0.16) -> list:
+    def decide(self, motor: np.ndarray, threshold: float = 0.14) -> list:
         active = [MOTOR_NAMES[i] for i in range(min(len(MOTOR_NAMES), motor.size)) if motor[i] > threshold]
-        pairs = [("forward", "back"), ("left", "right"), ("look_left", "look_right"), ("look_up", "look_down")]
+        pairs = [("forward", "back"), ("left", "right"), ("look_left", "look_right"),
+                 ("look_up", "look_down"), ("scroll_up", "scroll_down")]
         name_to_i = {n: i for i, n in enumerate(MOTOR_NAMES)}
         for a, b in pairs:
             if a in active and b in active:
@@ -106,7 +147,13 @@ class FruitFlyBrain:
 
     def save_weights(self, path=WEIGHTS_PATH) -> None:
         path = Path(path)
-        np.savez_compressed(path, W_in=self.W_in, W_rec=self.W_rec, W_out=self.W_out, gain=self.gain)
+        payload = {
+            "W_in": self.W_in, "W_out": self.W_out, "gain": self.gain,
+            "n_cols": np.array([N_COLS]), "col_size": np.array([COL_SIZE]),
+        }
+        for c, W in enumerate(self.W_cols):
+            payload[f"W_col_{c}"] = W
+        np.savez_compressed(path, **payload)
 
     def load_weights(self, path=WEIGHTS_PATH) -> bool:
         path = Path(path)
@@ -114,14 +161,18 @@ class FruitFlyBrain:
             return False
         try:
             data = np.load(path)
-            if data["W_in"].shape != self.W_in.shape: return False
-            if data["W_rec"].shape != self.W_rec.shape: return False
-            if data["W_out"].shape != self.W_out.shape: return False
+            if data["W_in"].shape != self.W_in.shape:
+                return False
+            if data["W_out"].shape != self.W_out.shape:
+                return False
             self.W_in = data["W_in"].astype(np.float32)
-            self.W_rec = data["W_rec"].astype(np.float32)
             self.W_out = data["W_out"].astype(np.float32)
             if "gain" in data and data["gain"].shape == self.gain.shape:
                 self.gain = data["gain"].astype(np.float32)
+            for c in range(N_COLS):
+                key = f"W_col_{c}"
+                if key in data and data[key].shape == self.W_cols[c].shape:
+                    self.W_cols[c] = data[key].astype(np.float32)
             return True
         except Exception:
             return False
