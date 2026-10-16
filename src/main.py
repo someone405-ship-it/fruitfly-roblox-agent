@@ -1,7 +1,8 @@
-"""FruitFly Roblox Agent — 8192 neurons, permanent skill memory, RMB look, full window."""
+"""FruitFly Roblox Agent — 12288 neurons, portal-first, fast mouse, permanent memory."""
 from __future__ import annotations
 import sys
 import time
+import numpy as np
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
@@ -52,7 +53,7 @@ class AgentWorker(QThread):
         self.auto_focus = True
         self.learning = False
         try:
-            self.trainer.bootstrap_explore(520)
+            self.trainer.bootstrap_explore(2400)
         except Exception:
             pass
         self._weights_loaded = loaded
@@ -60,7 +61,7 @@ class AgentWorker(QThread):
     def run(self) -> None:
         self._running = True
         mem = self.trainer.memory.summary()
-        self.log_ready.emit(f"brain online — {N_HIDDEN} neurons · permanent memory · RMB look · kill/loot")
+        self.log_ready.emit(f"brain online — {N_HIDDEN} neurons · portal-first · fast mouse · permanent memory")
         self.log_ready.emit(f"skill memory: {mem}")
         if self._weights_loaded:
             self.log_ready.emit("loaded saved brain weights")
@@ -69,7 +70,7 @@ class AgentWorker(QThread):
         self.worker_ready.emit()
         while self._running:
             if self._paused and not self.learning:
-                self.msleep(40)
+                self.msleep(30)
                 continue
             t0 = time.perf_counter()
             try:
@@ -87,17 +88,16 @@ class AgentWorker(QThread):
                     if keys:
                         self.log_ready.emit(f"learn <- {','.join(keys)} err={err:.3f} n={self.trainer.imit_samples}")
                     self.status_ready.emit(f"LEARNING samples={self.trainer.imit_samples} | {self.trainer.memory.summary()}")
-                    self.msleep(18)
+                    self.msleep(12)
                     continue
 
-                if self.auto_focus and self.brain.steps % 10 == 0:
+                if self.auto_focus and self.brain.steps % 12 == 0:
                     self.motor.focus_roblox(maximize=True)
                 frame = self.vision.capture()
                 sensory = self.vision.encode(frame)
                 motor, info = self.brain.step(sensory)
                 meta = self.vision.last_meta
                 self.trainer.set_mode("reward")
-                # permanent memory bias into motor
                 try:
                     mbias = self.trainer.memory.motor_bias_from_memory(meta, strength=0.28)
                     if mbias.size == motor.size:
@@ -114,31 +114,33 @@ class AgentWorker(QThread):
                 motor, notes, binfo = self.behavior.modulate(motor, meta, circuit_bias=cbias)
                 info.update(binfo)
                 info.update(cread)
-                actions = self.brain.decide(motor, threshold=0.15)
+                actions = self.brain.decide(motor, threshold=0.14)
                 junk = {"emote", "crouch", "chat_toggle"}
                 if not any(t in notes for t in ("browse", "join_intent", "ui_scroll", "ui_select")):
                     junk |= {"ui_up", "ui_down", "ui_select"}
                 actions = [a for a in actions if not a.startswith("look_") and a not in junk]
-                # enable freelook with RMB when looking hard
-                if abs(float(motor[6]) - float(motor[7])) > 0.25 or abs(float(motor[8]) - float(motor[9])) > 0.25:
+                if abs(float(motor[6]) - float(motor[7])) > 0.2 or abs(float(motor[8]) - float(motor[9])) > 0.2:
                     if "rmb_look" not in actions:
                         actions.append("rmb_look")
                 if "ui_scroll" in notes and "ui_down" not in actions:
                     actions.append("ui_down")
                 if "ui_select" in notes and "ui_select" not in actions:
                     actions.append("ui_select")
-                if any(t in notes for t in ("explore", "rail", "seek_portal", "fight", "attack", "lock_in", "wander", "parkour", "patrol", "hunt", "forage")):
+                # never attack outside arena
+                if "need_portal" in notes or not binfo.get("in_arena", False):
+                    actions = [a for a in actions if a not in ("secondary", "interact", "reset", "camera")]
+                if any(t in notes for t in ("explore", "rail", "seek_portal", "fight", "attack", "lock_in", "wander", "parkour", "patrol", "hunt", "forage", "hunting_portal")):
                     if "forward" not in actions:
                         actions.insert(0, "forward")
-                    if "sprint" not in actions and any(t in notes for t in ("fight", "attack", "lock_in", "seek_portal")):
+                    if "sprint" not in actions and any(t in notes for t in ("fight", "attack", "lock_in", "seek_portal", "portal_close")):
                         actions.append("sprint")
-                if any(t in notes for t in ("attack", "fight", "lock_in")) and "secondary" not in actions:
+                if any(t in notes for t in ("attack", "fight", "lock_in")) and binfo.get("in_arena", False) and "secondary" not in actions:
                     actions.append("secondary")
-                if "q_dash" in notes and "camera" not in actions:
+                if "q_dash" in notes and "camera" not in actions and binfo.get("in_arena", False):
                     actions.append("camera")
-                if "e_slash" in notes and "interact" not in actions:
+                if "e_slash" in notes and "interact" not in actions and binfo.get("in_arena", False):
                     actions.append("interact")
-                if "r_combo" in notes and "reset" not in actions:
+                if "r_combo" in notes and "reset" not in actions and binfo.get("in_arena", False):
                     actions.append("reset")
                 if "e_slash" not in notes:
                     actions = [a for a in actions if a != "interact"]
@@ -151,12 +153,11 @@ class AgentWorker(QThread):
                     self.log_ready.emit(f"fly: {line}")
                 try:
                     rew = self.trainer.online_step(notes, meta, motor)
-                    if abs(rew) > 0.35 and self.brain.steps % 15 == 0:
+                    if abs(rew) > 0.3 and self.brain.steps % 12 == 0:
                         self.log_ready.emit(f"train r={rew:+.2f} n={self.trainer.samples}")
                 except Exception:
                     pass
-                # periodic permanent save
-                if self.brain.steps > 0 and self.brain.steps % 200 == 0:
+                if self.brain.steps > 0 and self.brain.steps % 180 == 0:
                     try:
                         self.brain.save_weights(WEIGHTS_PATH)
                         self.trainer.flush_memory()
@@ -174,13 +175,16 @@ class AgentWorker(QThread):
                 self.motor_ready.emit({n: float(motor[i]) for i, n in enumerate(MOTOR_NAMES) if i < motor.size}, actions)
                 if sent:
                     self.log_ready.emit(f"-> {', '.join(sent)} | {','.join(notes)} | spk={info['n_spikes']}")
+                arena = "ARENA" if binfo.get("in_arena") else "NEED_PORTAL"
                 self.status_ready.emit(
-                    f"{binfo.get('combat_mode','?')} goal={binfo.get('goal','?')} power={binfo.get('power','?')} pain={binfo.get('pain',0):.2f}"
+                    f"{arena} | {binfo.get('combat_mode','?')} goal={binfo.get('goal','?')} "
+                    f"portal={float(meta.get('portal_score',0)):.2f} threat={float(meta.get('threat_score',0)):.2f} "
+                    f"pain={binfo.get('pain',0):.2f}"
                 )
             except Exception as e:
                 self.log_ready.emit(f"error: {type(e).__name__}: {e}")
             dt = (time.perf_counter() - t0) * 1000.0
-            self.msleep(max(1, int(26 - dt)))
+            self.msleep(max(1, int(18 - dt)))
         self.motor.release_all()
         self.vision.close()
         try:
@@ -198,7 +202,7 @@ class AgentWorker(QThread):
         self.motor.focus_roblox(maximize=True)
         ok = input_lock.lock()
         self._paused = False
-        self.log_ready.emit("START — autonomy + full Roblox window" if ok else "START")
+        self.log_ready.emit("START — portal-first autonomy" if ok else "START")
 
     def stop_fly(self) -> None:
         self._paused = True
@@ -231,14 +235,10 @@ class AgentWorker(QThread):
         host_learn.stop()
 
 
-# need numpy alias for worker bias line
-import numpy as np  # noqa: E402
-
-
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("FruitFly Roblox Agent — Advanced")
+        self.setWindowTitle("FruitFly Roblox Agent — Portal-First Advanced")
         self.resize(WINDOW_W, WINDOW_H)
         self.setStyleSheet(self._ss())
         self._flying = False
@@ -283,7 +283,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(16, 16, 16, 10)
         root.setSpacing(10)
         header = QHBoxLayout()
-        title = QLabel("FRUITFLY ROBLOX AGENT — ADVANCED")
+        title = QLabel("FRUITFLY — PORTAL FIRST")
         title.setObjectName("title")
         header.addWidget(title)
         header.addStretch()
@@ -385,7 +385,7 @@ class MainWindow(QMainWindow):
             return
         self._setup_done = True
         maximize_roblox_window()
-        self.setup_lbl.setText(f"{N_HIDDEN} neurons · permanent skill memory · RMB look · LEARN forever · full window")
+        self.setup_lbl.setText(f"{N_HIDDEN} neurons · PORTAL FIRST · fast mouse · no combat without portal")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
@@ -419,7 +419,7 @@ class MainWindow(QMainWindow):
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("AUTONOMY — RMB look · memory forever · kill rewards · STOP/F9")
+        self.watch_lbl.setText("AUTONOMY — must pass PORTAL before combat · fast look · F9 stop")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -451,7 +451,7 @@ class MainWindow(QMainWindow):
             self.worker.learning = True
             self.worker._paused = False
             self.btn_learn.setText("LEARNING… (stop)")
-            self.log_view.append("LEARN ON — play; keys+RMB tracked · skills saved forever")
+            self.log_view.append("LEARN ON — play through portal then fight; skills saved forever")
         else:
             host_learn.stop()
             self.worker.learning = False
@@ -504,9 +504,10 @@ class MainWindow(QMainWindow):
             pass
         try:
             n = info.get("n_hidden", N_HIDDEN)
+            arena = "ARENA" if info.get("in_arena") else "NEED_PORTAL"
             self.stats_lbl.setText(
-                f"neurons={n} steps={info.get('steps',0)} spikes={info.get('n_spikes',0)} "
-                f"rate={info.get('mean_rate',0):.3f} power={info.get('power','?')}"
+                f"{arena} neurons={n} steps={info.get('steps',0)} spikes={info.get('n_spikes',0)} "
+                f"portal={info.get('portal_score',0):.2f} threat={info.get('threat_score',0):.2f}"
             )
         except Exception:
             pass
