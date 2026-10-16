@@ -8,8 +8,6 @@ try:
     import pydirectinput
     pydirectinput.FAILSAFE = False
     pydirectinput.PAUSE = 0.0
-except ImportException:
-    pydirectinput = None
 except Exception:
     pydirectinput = None
 try:
@@ -203,7 +201,6 @@ class MotorController:
     def _move(self, dx, dy):
         if not dx and not dy:
             return False
-        # more micro-steps = smoother ultra-fast turns
         steps = 1
         if abs(dx) > 80 or abs(dy) > 80:
             steps = 4

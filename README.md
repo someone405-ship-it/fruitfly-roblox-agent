@@ -1,29 +1,21 @@
-# FruitFly Roblox Agent — 98k FAST (video-style)
+# FruitFly Roblox Agent — 139,255 (FlyWire scale)
 
-Whole-brain-style fly agent: **vision in → 98,304 neurons → ultra-fast keys/mouse out**.
-Same idea as the connectome-in-a-game clips (FlyWire / MaleCNS controlling a body through a keyboard) — not their game, your Roblox loop.
+**139,255 LIF units** — the official FlyWire FAFB v783 whole-brain neuron count (Dorkenwald et al. 2024).
+Block-sparse dynamics so it runs live on a Windows laptop. Not the real 50M-synapse graph (that needs specialized sparse GPU kernels); same **unit count**, real-time vision → keys/mouse.
 
-## Scale
+## This update
 
-| Spec | Value |
-|------|-------|
-| Neurons | **98,304** (12 × 8192 block-sparse LIF) |
-| MaleCNS reference | ~140k–167k |
-| This build | ≈60–70% of whole-brain count, live on CPU |
-| Dense full brain | Needs GPU connectome kernels (not this app) |
-| Sensory | 384-D screen features |
-| Motors | 26 (WASD, look, LMB/RMB, Esc, scroll, abilities) |
-| Look | sens 78, max 140 px/tick, 6 ms interval |
+| Feature | Detail |
+|---------|--------|
+| Neurons | **139,255** (FlyWire published count) |
+| Setup | **45s** Roblox wait + **12 retries** + multi-pass maximize |
+| Packages | Auto-install missing deps on start (skips if already installed) |
+| Mouse | sens **95**, max **165px**, **4ms** ticks |
+| Keys | short pulse, low latency SendInput |
+| Learn | keys + eyes → permanent files |
+| Leave/join | Esc, scroll, UI select |
 
-## Behavior
-
-- **Portal-first** — no combat until portal/arena; portal ≠ danger
-- **LEARN FROM ME** — keys **and** eyes (`fly_eye_memory.npz`)
-- **Leave / join** — Esc when bored/hurt/dead; scroll + UI + click to join
-- **Explore** — rails, parkour, freelook, lobby browse
-- **Permanent memory** — brain weights + skill JSON + eye pairs
-
-## Run
+## Run (Windows laptop)
 
 ```bash
 git clone https://github.com/someone405-ship-it/fruitfly-roblox-agent.git
@@ -34,10 +26,16 @@ pip install -r requirements.txt
 python run_app.py
 ```
 
-First launch after pull re-bootstraps (~1 min).
+`run_app.py` installs any **missing** packages automatically; already-installed ones are ignored.
 
-**START** · **LEARN FROM ME** · **F9** emergency + save
+First brain build can take **1–3 minutes** (139k units). Wait for the green ready line.
 
-Files: `fly_brain_weights.npz` · `fly_skill_memory.json` · `fly_eye_memory.npz`
+**START** · **LEARN FROM ME** · **F9** emergency
+
+Saves: `fly_brain_weights.npz` · `fly_skill_memory.json` · `fly_eye_memory.npz`
+
+Optional NVIDIA: `pip install cupy-cuda12x`
+
+**Not on iPhone/Android** — needs Windows desktop input + screen capture.
 
 MIT. Absolute olliE.
