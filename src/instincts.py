@@ -1,4 +1,4 @@
-"""Instinct drives + free-will goal arbiter."""
+"""Instinct drives + free-will goal arbiter — portal before combat."""
 from __future__ import annotations
 import time
 import math
@@ -34,6 +34,9 @@ class InstinctCore:
         self._idle_frames = 0
         self._look_phase = 0.0
         self.session_goals = 0
+        # zone memory: must pass portal before fight is legal
+        self.in_arena = False
+        self.portal_locked_until = 0.0
 
     def observe_vision(self, meta: dict, motion: float) -> None:
         b = float(meta.get("brightness", 0.5))
@@ -52,6 +55,17 @@ class InstinctCore:
             self.fatigue = max(0.0, self.fatigue - 0.01)
         self.arousal = 0.7 * self.arousal + 0.3 * min(1.0, motion * 5 + float(meta.get("threat_score", 0)))
 
+        # zone updates from vision
+        if meta.get("portal_passed") or meta.get("portal_event"):
+            self.in_arena = True
+            self.portal_locked_until = time.time() + 90.0
+        if float(meta.get("arena_hint", 0)) > 0.55 and float(meta.get("lobby_score", 0)) < 0.25:
+            self.in_arena = True
+        if float(meta.get("lobby_score", 0)) > 0.55 and float(meta.get("portal_score", 0)) < 0.15:
+            # back in lobby/hub — need portal again
+            if time.time() > self.portal_locked_until:
+                self.in_arena = False
+
     def reward_goal(self, goal: str, ok: bool) -> None:
         if goal not in self.success_counts:
             return
@@ -60,10 +74,13 @@ class InstinctCore:
             self.confidence = min(1.0, self.confidence + 0.02)
             if goal in ("fight", "hunt"):
                 self.aggression = min(0.95, self.aggression + 0.01)
-            if goal in ("explore", "wander", "parkour"):
+            if goal in ("explore", "wander", "parkour", "portal"):
                 self.curiosity = min(0.95, self.curiosity + 0.01)
             if goal == "flee":
                 self.caution = min(0.9, self.caution + 0.008)
+            if goal == "portal":
+                self.in_arena = True
+                self.portal_locked_until = time.time() + 90.0
         else:
             self.fail_counts[goal] += 1
             self.confidence = max(0.15, self.confidence - 0.015)
@@ -78,10 +95,25 @@ class InstinctCore:
         food = float(meta.get("food_score", 0))
         motion = float(meta.get("motion", 0))
         scores = {g: 0.05 for g in GOALS}
-        scores["portal"] += portal * 2.2
+
+        # HARD RULE: if not in arena, portal dominates; fight/hunt heavily penalized
+        if not self.in_arena:
+            scores["portal"] += 3.5 + portal * 3.0
+            scores["rail"] += rail * 1.2
+            scores["browse"] += lobby * 1.5
+            scores["explore"] += 0.4 + self.curiosity * 0.3
+            scores["fight"] *= 0.05
+            scores["hunt"] *= 0.05
+            scores["fight"] -= 2.0
+            scores["hunt"] -= 2.0
+            if portal > 0.12:
+                scores["portal"] += 4.0
+        else:
+            scores["portal"] += portal * 1.0
+            scores["fight"] += threat * (1.2 * self.aggression + 0.5 * anger)
+            scores["hunt"] += threat * 0.8 * self.aggression
+
         scores["rail"] += rail * 1.6
-        scores["fight"] += threat * (1.2 * self.aggression + 0.5 * anger)
-        scores["hunt"] += threat * 0.8 * self.aggression
         scores["flee"] += (loom * 1.4 + threat * 0.6) * self.caution + pain * 0.8
         scores["forage"] += food * 1.5 * self.curiosity
         scores["browse"] += lobby * 1.8 + (0.4 if lobby > 0.3 else 0)
@@ -93,28 +125,42 @@ class InstinctCore:
         scores["social"] += self.social * 0.4 + (0.15 if self.boredom > 0.6 else 0)
         scores["camera_look"] += self.curiosity * 0.25 + (0.3 if self._idle_frames > 40 else 0)
         scores["rest"] += self.fatigue * 0.9 - self.arousal * 0.3
+
         if water > 0.5:
             scores["flee"] += 2.0
             scores["explore"] -= 1.0
+
         scores[self.last_goal] += 0.15 * self.persistence
         for g in GOALS:
             s, f = self.success_counts[g], self.fail_counts[g]
             scores[g] += 0.15 * (s / (s + f))
-        keys = list(scores.keys())
-        arr = np.array([max(1e-6, scores[k]) for k in keys], dtype=np.float64)
-        arr = arr / arr.sum()
-        temp = 0.7 + 0.6 * self.curiosity
-        arr = np.power(arr, 1.0 / temp)
-        arr = arr / arr.sum()
-        choice = str(np.random.choice(keys, p=arr))
+
+        # hard overrides
         if water > 0.55:
             choice = "flee"
-        elif portal > 0.28:
+        elif not self.in_arena and portal > 0.10:
             choice = "portal"
-        elif threat > 0.55 and self.aggression > 0.45:
+        elif not self.in_arena and lobby > 0.45:
+            choice = "browse" if portal < 0.08 else "portal"
+        elif not self.in_arena:
+            # still hunting the portal / path to it
+            choice = "portal" if portal > 0.05 else ("rail" if rail > 0.2 else "explore")
+        elif self.in_arena and threat > 0.55 and self.aggression > 0.45:
             choice = "fight" if anger + self.aggression > self.caution else "flee"
-        elif lobby > 0.5 and self.boredom > 0.35:
-            choice = "browse" if self.curiosity > 0.4 else "rejoin"
+        elif lobby > 0.5 and self.boredom > 0.35 and not self.in_arena:
+            choice = "browse"
+        else:
+            keys = list(scores.keys())
+            arr = np.array([max(1e-6, scores[k]) for k in keys], dtype=np.float64)
+            arr = arr / arr.sum()
+            temp = 0.65 + 0.5 * self.curiosity
+            arr = np.power(arr, 1.0 / temp)
+            arr = arr / arr.sum()
+            choice = str(np.random.choice(keys, p=arr))
+            # final gate: never fight/hunt outside arena
+            if choice in ("fight", "hunt") and not self.in_arena:
+                choice = "portal" if portal > 0.05 else "explore"
+
         if choice != self.last_goal:
             self.goal_since = time.time()
             self.session_goals += 1
@@ -125,9 +171,9 @@ class InstinctCore:
         return choice
 
     def look_wander(self) -> Tuple[float, float]:
-        self._look_phase += 0.07 + 0.05 * self.curiosity
-        lx = math.sin(self._look_phase) * 0.6
-        ly = math.sin(self._look_phase * 0.37) * 0.25
+        self._look_phase += 0.12 + 0.08 * self.curiosity
+        lx = math.sin(self._look_phase) * 0.85
+        ly = math.sin(self._look_phase * 0.37) * 0.35
         return lx, ly
 
     def snapshot(self) -> Dict:
@@ -138,4 +184,5 @@ class InstinctCore:
             "fatigue": self.fatigue, "confidence": self.confidence,
             "goal": self.last_goal, "session_goals": self.session_goals,
             "idle_frames": self._idle_frames,
+            "in_arena": self.in_arena,
         }

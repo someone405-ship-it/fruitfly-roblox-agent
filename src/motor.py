@@ -1,4 +1,4 @@
-"""Motor — SendInput keys/mouse + LMB attack + RMB look around."""
+"""Motor — fast human-like keys/mouse + LMB attack + RMB look."""
 from __future__ import annotations
 from typing import Set
 import time
@@ -15,6 +15,8 @@ try:
     import pygetwindow as gw
 except ImportError:
     gw = None
+
+from .config import LOOK_SENSITIVITY, LOOK_MAX_PX, LOOK_INTERVAL, LOOK_DEADZONE
 
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
@@ -91,17 +93,16 @@ class MotorController:
         self.enabled = True
         self.last_sent = []
         self.last_mouse = (0, 0)
-        self.look_sensitivity = 16.0
-        self.look_deadzone = 0.10
-        self.max_look_px = 32
+        self.look_sensitivity = float(LOOK_SENSITIVITY)
+        self.look_deadzone = float(LOOK_DEADZONE)
+        self.max_look_px = int(LOOK_MAX_PX)
         self._last_pulse = {}
-        self._pulse_cooldown = 0.9
+        self._pulse_cooldown = 0.55
         self._last_look_t = 0.0
-        self._look_interval = 0.025
+        self._look_interval = float(LOOK_INTERVAL)
         self._rmb_held = False
 
     def focus_roblox(self, maximize: bool = True):
-        """Bring Roblox to foreground (and maximize) so SendInput hits the game."""
         try:
             import ctypes
             from ctypes import wintypes
@@ -125,9 +126,9 @@ class MotorController:
             user32.EnumWindows(enum_cb, 0)
             if found:
                 hwnd = found[0]
-                user32.ShowWindow(hwnd, 9)  # restore
+                user32.ShowWindow(hwnd, 9)
                 if maximize:
-                    user32.ShowWindow(hwnd, 3)  # maximize
+                    user32.ShowWindow(hwnd, 3)
                 user32.SetForegroundWindow(hwnd)
                 try:
                     user32.BringWindowToTop(hwnd)
@@ -181,7 +182,7 @@ class MotorController:
     def _press(self, key):
         vk = VK.get(key)
         if vk is not None:
-            _si_key(vk, False); time.sleep(0.03); _si_key(vk, True); return True
+            _si_key(vk, False); time.sleep(0.018); _si_key(vk, True); return True
         if pydirectinput:
             try:
                 pydirectinput.press(key); return True
@@ -192,6 +193,11 @@ class MotorController:
     def _move(self, dx, dy):
         if not dx and not dy:
             return False
+        # split large moves into 1-2 steps for smoother but still fast human feel
+        if abs(dx) > 40 or abs(dy) > 40:
+            hdx, hdy = dx // 2, dy // 2
+            _si_move(hdx, hdy)
+            dx, dy = dx - hdx, dy - hdy
         if _si_move(dx, dy):
             return True
         if pydirectinput:
@@ -247,7 +253,7 @@ class MotorController:
             if not key:
                 continue
             if name in PULSE_ACTIONS:
-                gap = 0.4 if name in KIT_ACTIONS else self._pulse_cooldown
+                gap = 0.28 if name in KIT_ACTIONS else self._pulse_cooldown
                 if now - self._last_pulse.get(name, 0) < gap:
                     continue
                 if self._press(key):
@@ -257,7 +263,6 @@ class MotorController:
             if name not in self.active and self._keydown(key):
                 self.active.add(name); sent.append(name)
 
-        # Look + optional RMB hold for freelook
         looking = False
         if motor_scores is not None and len(motor_scores) >= 10 and now - self._last_look_t >= self._look_interval:
             ll, lr = float(motor_scores[6]), float(motor_scores[7])
@@ -266,8 +271,8 @@ class MotorController:
             if abs(raw_x) < self.look_deadzone: raw_x = 0.0
             if abs(raw_y) < self.look_deadzone: raw_y = 0.0
             dx = int(max(-self.max_look_px, min(self.max_look_px, raw_x * self.look_sensitivity)))
-            dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.85)))
-            want_rmb = "rmb_look" in desired or abs(raw_x) + abs(raw_y) > 0.35
+            dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.9)))
+            want_rmb = "rmb_look" in desired or abs(raw_x) + abs(raw_y) > 0.28
             if want_rmb:
                 if self._rmb_down():
                     sent.append("rmb_hold")
@@ -283,7 +288,7 @@ class MotorController:
         if not looking and self._rmb_held and "rmb_look" not in desired:
             self._rmb_up()
 
-        if "secondary" in desired and now - self._last_pulse.get("secondary", 0) >= 0.35:
+        if "secondary" in desired and now - self._last_pulse.get("secondary", 0) >= 0.22:
             if self._left_click():
                 sent.append("attack_click")
                 self._last_pulse["secondary"] = now
@@ -295,15 +300,15 @@ class MotorController:
             return
         try:
             self.release_all()
-            time.sleep(0.05)
+            time.sleep(0.04)
             self._press("/")
-            time.sleep(0.18)
+            time.sleep(0.12)
             if pydirectinput:
-                pydirectinput.typewrite(str(text)[:40], interval=0.04)
+                pydirectinput.typewrite(str(text)[:40], interval=0.025)
             else:
                 for ch in str(text)[:40]:
                     self._press(ch.lower() if ch.isalpha() else ch)
-            time.sleep(0.08)
+            time.sleep(0.05)
             self._press("enter")
         except Exception:
             pass
