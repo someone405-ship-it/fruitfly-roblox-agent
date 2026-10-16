@@ -1,4 +1,4 @@
-"""FruitFly Roblox Agent — LEARN FROM ME + lock-in combat."""
+"""FruitFly Roblox Agent — full autonomy + LEARN FROM ME."""
 from __future__ import annotations
 import sys
 import time
@@ -59,7 +59,15 @@ class AgentWorker(QThread):
 
     def run(self) -> None:
         self._running = True
-        self.log_ready.emit("brain online — multi-hero + train")
+        self.log_ready.emit("brain online — full autonomy + instincts")
+        self.log_ready.emit(
+            "features: free-will goals, portal/rail, lock-in fight, circle-strafe, "
+            "dodge predict, parkour, browse/join games, social chat, forage, "
+            "patrol, camera curiosity, rest/fatigue, boredom, novelty, "
+            "personality drift, learn-from-me, multi-hero, pain/anger, "
+            "water avoid, lobby leave, soft-max goal pick, success memory, "
+            "QER kit rotate, sprint hunt, eyes+look, motor %"
+        )
         if self.trainer.samples:
             self.log_ready.emit(f"pre-train samples={self.trainer.samples}")
         self.worker_ready.emit()
@@ -106,9 +114,15 @@ class AgentWorker(QThread):
                 info.update(binfo)
                 info.update(cread)
                 actions = self.brain.decide(motor, threshold=0.16)
-                junk = {"ui_up", "ui_down", "ui_select", "emote", "crouch", "chat_toggle"}
+                junk = {"emote", "crouch", "chat_toggle"}
+                if not any(t in notes for t in ("browse", "join_intent", "ui_scroll", "ui_select")):
+                    junk |= {"ui_up", "ui_down", "ui_select"}
                 actions = [a for a in actions if not a.startswith("look_") and a not in junk]
-                if any(t in notes for t in ("explore", "rail", "seek_portal", "fight", "attack", "lock_in")):
+                if "ui_scroll" in notes and "ui_down" not in actions:
+                    actions.append("ui_down")
+                if "ui_select" in notes and "ui_select" not in actions:
+                    actions.append("ui_select")
+                if any(t in notes for t in ("explore", "rail", "seek_portal", "fight", "attack", "lock_in", "wander", "parkour", "patrol", "hunt", "forage")):
                     if "forward" not in actions:
                         actions.insert(0, "forward")
                     if "sprint" not in actions and any(t in notes for t in ("fight", "attack", "lock_in", "seek_portal")):
@@ -150,7 +164,7 @@ class AgentWorker(QThread):
                     tag = ",".join(notes) if notes else ""
                     self.log_ready.emit(f"-> {', '.join(sent)} | {tag} | spk={info['n_spikes']}")
                 self.status_ready.emit(
-                    f"{binfo.get('combat_mode','?')} hero={binfo.get('char_label', binfo.get('character','?'))} pain={binfo.get('pain',0):.2f}"
+                    f"{binfo.get('combat_mode','?')} goal={binfo.get('goal','?')} hero={binfo.get('char_label', binfo.get('character','?'))} pain={binfo.get('pain',0):.2f}"
                 )
             except Exception as e:
                 self.log_ready.emit(f"error: {type(e).__name__}: {e}")
@@ -170,7 +184,7 @@ class AgentWorker(QThread):
         self.motor.focus_roblox()
         ok = input_lock.lock()
         self._paused = False
-        self.log_ready.emit("START — watch only" if ok else "START — fly on")
+        self.log_ready.emit("START — full autonomy" if ok else "START — fly on")
 
     def stop_fly(self) -> None:
         self._paused = True
@@ -340,7 +354,7 @@ class MainWindow(QMainWindow):
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("LEARN FROM ME = you play, fly copies. Lock-in combat. Portal/rail follow.")
+        self.setup_lbl.setText("Full autonomy. Free-will goals. Can browse/join games. LEARN FROM ME trains him.")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
@@ -355,14 +369,10 @@ class MainWindow(QMainWindow):
         except Exception:
             info = None
         if not info:
-            self.log_view.append("No Roblox window — join Superhero Arena first")
+            self.log_view.append("No Roblox window")
             return False
         self.log_view.append(f"Roblox window: {info.get('title')}")
-        title = (info.get("title") or "").lower()
-        if "superhero" in title or "arena" in title or info.get("is_experience"):
-            return True
-        self.log_view.append("Press Play on Superhero Arena so you are in the game")
-        return False
+        return True
 
     def _on_start(self) -> None:
         if not self._setup_done or self._flying:
@@ -373,13 +383,13 @@ class MainWindow(QMainWindow):
         if not is_roblox_running():
             launch_roblox(6.0)
         if not self._roblox_ready_for_play():
-            self.setup_lbl.setText("Join Superhero Arena in Roblox, then press START")
+            self.setup_lbl.setText("Open Roblox, then START")
             return
         self.worker.start_fly()
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — STOP/F9. Lock-in fights. Follows portal/rail.")
+        self.watch_lbl.setText("AUTONOMY ON — he picks goals. STOP/F9. LEARN trains him.")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -394,7 +404,7 @@ class MainWindow(QMainWindow):
     def _on_scare(self) -> None:
         try:
             self.worker.behavior.scare()
-            self.log_view.append("SCARE — pain up, then lock-in")
+            self.log_view.append("SCARE — pain then lock-in")
         except Exception as e:
             self.log_view.append(f"scare failed: {e}")
 
@@ -411,7 +421,7 @@ class MainWindow(QMainWindow):
             self.worker.learning = True
             self.worker._paused = False
             self.btn_learn.setText("LEARNING… (click to stop)")
-            self.log_view.append("LEARN FROM ME ON — play Roblox yourself; fly copies WASD/Shift/Space/QER")
+            self.log_view.append("LEARN FROM ME ON — play; he copies WASD/Shift/Space/QER")
             if not ok:
                 self.log_view.append("learn: key capture failed")
         else:
@@ -419,7 +429,7 @@ class MainWindow(QMainWindow):
             self.worker.learning = False
             self.worker._paused = True
             self.btn_learn.setText("LEARN FROM ME")
-            self.log_view.append(f"LEARN OFF — imit samples={self.worker.trainer.imit_samples} (weights save on exit)")
+            self.log_view.append(f"LEARN OFF — samples={self.worker.trainer.imit_samples}")
 
     def _on_emergency(self) -> None:
         self.worker.emergency()
@@ -466,9 +476,8 @@ class MainWindow(QMainWindow):
             f"t={info.get('t_ms',0):.0f}ms steps={info.get('steps',0)}\n"
             f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
             f"fear={info.get('fear',0):.2f} pain={info.get('pain',0):.2f} anger={info.get('anger',0):.2f}\n"
-            f"loom={info.get('loom_score',0):.2f} gf={info.get('gf_rate',0):.2f}\n"
-            f"food={info.get('food_score',0):.2f} water={info.get('water_score',0):.2f}\n"
-            f"mode={info.get('combat_mode','?')} hero={info.get('char_label',info.get('character','?'))}\n"
+            f"mode={info.get('combat_mode','?')} goal={info.get('goal','?')} hero={info.get('char_label',info.get('character','?'))}\n"
+            f"aggro={info.get('drv_aggression',0):.2f} curio={info.get('drv_curiosity',0):.2f} bore={info.get('drv_boredom',0):.2f}\n"
             f"weak={info.get('weakness',0):.2f} hits={info.get('hits',0)} train={self.worker.trainer.samples}\n"
             f"rail={info.get('rail_score',0):.2f} portal={info.get('portal_score',0):.2f}\n"
             f"lock={'ON' if input_lock.is_locked() else 'off'} learn={self.worker.trainer.imit_samples}"
