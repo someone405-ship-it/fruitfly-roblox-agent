@@ -1,4 +1,4 @@
-"""Fast FruitFly — near-full MaleCNS scale block-sparse + ultra-fast I/O."""
+"""FruitFly — FlyWire-scale 139,255 LIF units (block-sparse) + ultra-fast I/O."""
 
 from dataclasses import dataclass
 
@@ -18,27 +18,28 @@ WARNING = "#FFC14D"
 MOTOR_POS = "#00E5FF"
 MOTOR_NEG = "#FF4D6A"
 
-# Near-full fly brain on CPU (MaleCNS ~140–167k).
-# 12 columns × 8192 = 98304 LIF units ≈ 60–70% of whole brain,
-# block-sparse so it still runs live (dense 140k needs GPU kernels).
-N_COLS = 12
+# Official FlyWire FAFB v783 whole-brain neuron count (Dorkenwald et al. 2024):
+# 139,255 proofread neurons. We run that many LIF units block-sparse.
+# This is NOT the real synapse graph (50M synapses need specialized sparse kernels);
+# it is the same *count* of units, live on a laptop.
+N_HIDDEN = 139255
 COL_SIZE = 8192
-N_HIDDEN = N_COLS * COL_SIZE  # 98304
+N_COLS = (N_HIDDEN + COL_SIZE - 1) // COL_SIZE  # 17 columns (last partial)
 N_SENSORY = 384
 N_MOTOR = 26
-DT_MS = 6.0
-TAU_MEM = 10.0
-TAU_SLOW = 55.0
+DT_MS = 5.0
+TAU_MEM = 9.0
+TAU_SLOW = 50.0
 V_THRESH = 1.0
 V_RESET = 0.0
-NOISE_SCALE = 0.018
-SPARSITY = 0.04
-INTER_SPARSITY = 0.004
-SPECTRAL_RADIUS = 0.94
+NOISE_SCALE = 0.016
+SPARSITY = 0.035
+INTER_SPARSITY = 0.003
+SPECTRAL_RADIUS = 0.93
 
 CAPTURE_W = 480
 CAPTURE_H = 270
-FPS_TARGET = 55
+FPS_TARGET = 60
 
 MOTOR_NAMES = [
     "forward", "back", "left", "right", "jump", "sprint",
@@ -67,11 +68,17 @@ WEIGHTS_PATH = "fly_brain_weights.npz"
 SKILL_MEMORY_PATH = "fly_skill_memory.json"
 EYE_MEMORY_PATH = "fly_eye_memory.npz"
 
-# Video-style snap aim (human-plus)
-LOOK_SENSITIVITY = 78.0
-LOOK_MAX_PX = 140
-LOOK_INTERVAL = 0.006
-LOOK_DEADZONE = 0.03
+# Ultra-fast mouse / keys (human-plus snap)
+LOOK_SENSITIVITY = 95.0
+LOOK_MAX_PX = 165
+LOOK_INTERVAL = 0.004
+LOOK_DEADZONE = 0.025
+
+# Setup waits (long = higher success chance)
+SETUP_ROBLOX_WAIT_S = 45.0
+SETUP_ROBLOX_RETRIES = 12
+SETUP_RETRY_GAP_S = 3.5
+SETUP_MAXIMIZE_PASSES = 5
 
 POWER_TIERS = [
     (0, 1.0, "dormant"),
