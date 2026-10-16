@@ -1,4 +1,4 @@
-"""Permanent fly stats — luck, food, items, power… auto rewards with hard max + death unreward."""
+"""Permanent fly stats — luck, food, items, power… max caps + death: 0=HURT, 1+=lose."""
 from __future__ import annotations
 import json
 import time
@@ -80,6 +80,7 @@ class FlyStats:
         self.last_reward_log: List[str] = []
         self.all_max_announced = False
         self._last_death_at = 0.0
+        self._last_hurt: List[str] = []
         self.load()
 
     def load(self) -> bool:
@@ -128,7 +129,12 @@ class FlyStats:
             return 0.0, None
 
         if amount < 0:
-            before = self.values[name]
+            before = float(self.values[name])
+            # 0 stat → cannot lose more → HURT signal
+            if before <= 0.0:
+                self.save()
+                return 0.0, f"HURT:{name}"
+            # 1+ → lose stat (floor at 0)
             self.values[name] = max(0.0, before + amount)
             delta = self.values[name] - before
             self.save()
@@ -170,30 +176,50 @@ class FlyStats:
         return applied, msg
 
     def on_death(self) -> Dict[str, Any]:
-        """Roblox death — strip rewards. Debounced."""
+        """Roblox death — lose stats if >=1; HURT if already 0. Debounced."""
         now = time.time()
         if now - self._last_death_at < 2.5:
-            return {"event": "death", "applied": {}, "messages": [], "line": "", "skipped": True}
+            return {"event": "death", "applied": {}, "hurt": [], "messages": [], "line": "", "skipped": True}
         self._last_death_at = now
         self.deaths += 1
 
         table = EVENT_REWARDS.get("death", {})
         applied: Dict[str, float] = {}
+        hurt: List[str] = []
         for k, amt in table.items():
-            delta, _msg = self.grant(k, float(amt))
-            if abs(delta) > 1e-9:
-                applied[k] = delta
+            if float(amt) >= 0:
+                delta, msg = self.grant(k, float(amt))
+                if abs(delta) > 1e-9:
+                    applied[k] = delta
+                continue
+            before = float(self.values.get(k, 0.0))
+            if before <= 0.0:
+                hurt.append(k)
+            else:
+                delta, msg = self.grant(k, float(amt))
+                if abs(delta) > 1e-9:
+                    applied[k] = delta
+                elif msg and str(msg).startswith("HURT:"):
+                    hurt.append(k)
         line_idx = self.deaths % len(DEATH_LINES)
         death_msg = DEATH_LINES[line_idx]
+        parts = []
         if applied:
-            parts = [f"{STAT_LABELS.get(k, k)}{delta:+.0f}" for k, delta in applied.items()]
-            death_msg = death_msg + " | stats " + " ".join(parts)
+            parts.append("lost " + " ".join(
+                f"{STAT_LABELS.get(k, k)}{delta:+.0f}" for k, delta in applied.items()
+            ))
+        if hurt:
+            parts.append("HURT (0-stat) " + ",".join(STAT_LABELS.get(k, k) for k in hurt))
+        if parts:
+            death_msg = death_msg + " | " + " | ".join(parts)
         self.last_messages.append(death_msg)
         self.last_reward_log.append(death_msg)
+        self._last_hurt = list(hurt)
         self.save()
         return {
             "event": "death",
             "applied": applied,
+            "hurt": hurt,
             "messages": [death_msg],
             "line": death_msg,
             "deaths": self.deaths,
@@ -216,6 +242,8 @@ class FlyStats:
                 messages.append(msg)
                 if "MAX" in msg.upper() or "CAP" in msg.upper() or "peak" in msg.lower():
                     blocked.append(k)
+                if str(msg).startswith("HURT:"):
+                    messages.append(f"HURT — {STAT_LABELS.get(k, k)} was 0, took damage instead of losing stat.")
         line = ""
         if applied:
             parts = [f"{STAT_LABELS.get(k, k)}{delta:+.0f}" for k, delta in applied.items()]
