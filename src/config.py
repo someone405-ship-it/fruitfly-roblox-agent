@@ -1,4 +1,4 @@
-"""FruitFly — FlyWire-scale 139,255 LIF + potential unlock + ultra-fast I/O."""
+"""FruitFly — FlyWire-scale 139,255 LIF + potential + stats + ultra-fast I/O."""
 
 from dataclasses import dataclass
 
@@ -66,14 +66,13 @@ EYE_MEMORY_PATH = "fly_eye_memory.npz"
 MISTAKE_MEMORY_PATH = "fly_mistake_memory.json"
 WIN_MEMORY_PATH = "fly_win_memory.json"
 POTENTIAL_PATH = "fly_potential.json"
+STATS_PATH = "fly_stats.json"
 
-# Ultra-fast human-plus I/O
 LOOK_SENSITIVITY = 110.0
 LOOK_MAX_PX = 185
 LOOK_INTERVAL = 0.003
 LOOK_DEADZONE = 0.02
 
-# Decision speed
 DECIDE_THRESHOLD_BASE = 0.09
 DECIDE_THRESHOLD_MIN = 0.05
 REFLEX_ENABLED = True
@@ -83,6 +82,20 @@ SETUP_ROBLOX_WAIT_S = 45.0
 SETUP_ROBLOX_RETRIES = 12
 SETUP_RETRY_GAP_S = 3.5
 SETUP_MAXIMIZE_PASSES = 5
+
+# Stat caps (hard max — no more rewards of that type)
+STAT_MAX = {
+    "luck": 100,
+    "food": 99,
+    "items": 50,
+    "power": 100,
+    "speed": 100,
+    "rage": 100,
+    "shield": 100,
+    "vitality": 100,
+    "focus": 100,
+    "grit": 100,
+}
 
 POWER_TIERS = [
     (0, 1.0, "dormant"),
