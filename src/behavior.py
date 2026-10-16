@@ -46,6 +46,7 @@ class BehaviorLayer:
         self._food_seen = False
         self._danger_seen = False
         self._danger_now = False
+        self._last_chat_at = 0.0
         self.mode = "explore"
         self._flee_until = 0.0
         self._fight_until = 0.0
@@ -153,11 +154,11 @@ class BehaviorLayer:
         err = cx - 0.5
         if err > 0.05:
             m[self.idx["right"]] += strength * min(1.0, err * 3.2)
-            m[self.idx["look_right"]] += 0.5 * min(1.0, err * 3.2)
+            m[self.idx["look_right"]] += 0.85 * min(1.0, err * 3.5)
             m[self.idx["left"]] -= 0.35
         elif err < -0.05:
             m[self.idx["left"]] += strength * min(1.0, -err * 3.2)
-            m[self.idx["look_left"]] += 0.5 * min(1.0, -err * 3.2)
+            m[self.idx["look_left"]] += 0.85 * min(1.0, -err * 3.5)
             m[self.idx["right"]] -= 0.35
 
     def _predict_and_dodge(self, m, meta, now):
@@ -288,8 +289,10 @@ class BehaviorLayer:
             notes.append("danger")
             if not self._danger_seen:
                 self._say("danger")
-                self.pending_chat = "danger"
-                notes.append("chat_danger")
+                if now - self._last_chat_at > 3.5:
+                    self.pending_chat = "danger"
+                    notes.append("chat_danger")
+                    self._last_chat_at = now
                 self._danger_seen = True
         else:
             self._danger_seen = False
@@ -331,8 +334,10 @@ class BehaviorLayer:
         if food > 0.5 and not fighting:
             notes.append("food_seen")
             if not self._food_seen:
-                self.pending_chat = "food"
-                notes.append("chat_food")
+                if now - self._last_chat_at > 3.5:
+                    self.pending_chat = "food"
+                    notes.append("chat_food")
+                    self._last_chat_at = now
             self._food_seen = True
         else:
             self._food_seen = False
