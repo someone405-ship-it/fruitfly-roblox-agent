@@ -82,15 +82,44 @@ class MotorController:
         self.enabled = True
         self.last_sent = []
         self.last_mouse = (0, 0)
-        self.look_sensitivity = 8.0
-        self.look_deadzone = 0.28
-        self.max_look_px = 22
+        self.look_sensitivity = 14.0
+        self.look_deadzone = 0.12
+        self.max_look_px = 28
         self._last_pulse = {}
-        self._pulse_cooldown = 1.5
+        self._pulse_cooldown = 0.9
         self._last_look_t = 0.0
         self._look_interval = 0.03
 
     def focus_roblox(self):
+        """Bring Roblox to foreground so SendInput hits the game."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            found = []
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+            def enum_cb(h, _lp):
+                if not user32.IsWindowVisible(h):
+                    return True
+                length = user32.GetWindowTextLengthW(h)
+                if length < 1:
+                    return True
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(h, buf, length + 1)
+                title = (buf.value or "").lower()
+                if "roblox" in title and "fruitfly" not in title:
+                    found.append(h)
+                return True
+
+            user32.EnumWindows(enum_cb, 0)
+            if found:
+                hwnd = found[0]
+                user32.ShowWindow(hwnd, 9)
+                user32.SetForegroundWindow(hwnd)
+                return True
+        except Exception:
+            pass
         if gw is None:
             return False
         try:
@@ -216,13 +245,20 @@ class MotorController:
         return sent
 
     def type_text(self, text):
-        if not self.enabled:
+        if not self.enabled or not text:
             return
         try:
-            self._press("/"); time.sleep(0.2)
+            self.release_all()
+            time.sleep(0.05)
+            self._press("/")
+            time.sleep(0.18)
             if pydirectinput:
-                pydirectinput.typewrite(text, interval=0.05)
-            time.sleep(0.08); self._press("enter")
+                pydirectinput.typewrite(str(text)[:40], interval=0.04)
+            else:
+                for ch in str(text)[:40]:
+                    self._press(ch.lower() if ch.isalpha() else ch)
+            time.sleep(0.08)
+            self._press("enter")
         except Exception:
             pass
 
