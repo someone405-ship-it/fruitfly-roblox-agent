@@ -1,9 +1,34 @@
-"""Deadpool kit + rail/portal + pain/anger + predict/dodge."""
+"""Multi-hero kit: Deadpool / Batman / War Machine + rail/portal + pain/anger + dodge."""
 from __future__ import annotations
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import time
 import numpy as np
 from .config import MOTOR_NAMES, N_MOTOR
+
+CHAR_KITS: Dict[str, Dict[str, Any]] = {
+    "deadpool": {
+        "label": "Deadpool",
+        "q": "Immortal Dash", "e": "Air Slash", "r": "Deadpool Combo",
+        "q_gap": 3.0, "e_gap": 2.2, "r_gap": 4.2,
+        "aggro": 0.9, "dodge_bias": 0.85, "melee": 0.5,
+        "say_pick": "picking Deadpool. slash and dash.",
+    },
+    "batman": {
+        "label": "Batman",
+        "q": "Grapple", "e": "Batarang", "r": "Smoke Bomb",
+        "q_gap": 2.6, "e_gap": 1.9, "r_gap": 5.0,
+        "aggro": 0.55, "dodge_bias": 1.15, "melee": 0.35,
+        "say_pick": "switching to Batman. stay mobile, throw, smoke.",
+    },
+    "war_machine": {
+        "label": "War Machine",
+        "q": "Jet Boost", "e": "Missile", "r": "Heavy Barrage",
+        "q_gap": 2.8, "e_gap": 2.4, "r_gap": 3.6,
+        "aggro": 1.1, "dodge_bias": 0.7, "melee": 0.6,
+        "say_pick": "War Machine online. boost, missile, barrage.",
+    },
+}
+CHAR_ORDER = ("deadpool", "batman", "war_machine")
 
 
 class BehaviorLayer:
@@ -11,10 +36,11 @@ class BehaviorLayer:
         self.fear = 0.0
         self.pain = 0.0
         self.anger = 0.0
+        self.weakness = 0.0
         self.curiosity = 0.75
         self.arousal = 0.5
-        self.pending_chat: Optional[str] = None
-        self.pending_line: Optional[str] = None
+        self.pending_chat = None
+        self.pending_line = None
         self.idx = {n: i for i, n in enumerate(MOTOR_NAMES)}
         self.manual_scare = False
         self._food_seen = False
@@ -24,19 +50,48 @@ class BehaviorLayer:
         self.flee_seconds = 0.85
         self.fight_seconds = 3.0
         self.cd_q = self.cd_e = self.cd_r = 0.0
-        self.q_gap, self.e_gap, self.r_gap = 3.0, 2.2, 4.2
         self._rot = 0
         self._next_rot_at = 0.0
         self.character = "deadpool"
+        self._char_i = 0
+        self._last_switch = 0.0
+        self.switch_cooldown = 18.0
         self._last_say = 0.0
-        self._hist_motion: List[float] = []
-        self._hist_cx: List[float] = []
+        self._hist_motion = []
+        self._hist_cx = []
         self._pred_side = 0.0
         self._last_dodge = 0.0
+        self._hits = 0
+        self.kit = CHAR_KITS[self.character]
+
+    def _apply_char(self, name: str) -> None:
+        if name not in CHAR_KITS:
+            name = "deadpool"
+        self.character = name
+        self.kit = CHAR_KITS[name]
+        self._char_i = CHAR_ORDER.index(name) if name in CHAR_ORDER else 0
+        self.cd_q = self.cd_e = self.cd_r = 0.0
+        self._rot = 0
+        self._next_rot_at = 0.0
+        self._say(self.kit["say_pick"])
+
+    def maybe_switch_character(self, now: float):
+        weak = self.pain > 0.62 or self.weakness > 0.55 or (self.fear > 0.7 and self.pain > 0.4)
+        if not weak or now - self._last_switch < self.switch_cooldown:
+            return None
+        self._last_switch = now
+        self._char_i = (self._char_i + 1) % len(CHAR_ORDER)
+        name = CHAR_ORDER[self._char_i]
+        self._apply_char(name)
+        self.pain = max(0.15, self.pain * 0.45)
+        self.weakness = max(0.0, self.weakness - 0.35)
+        self.anger = min(1.0, self.anger + 0.2)
+        return name
 
     def scare(self) -> None:
         self.fear = 1.0
         self.pain = min(1.0, self.pain + 0.35)
+        self.weakness = min(1.0, self.weakness + 0.25)
         self.manual_scare = True
         self.mode = "flee"
         self._flee_until = time.time() + self.flee_seconds
@@ -44,7 +99,7 @@ class BehaviorLayer:
 
     def _say(self, line: str) -> None:
         now = time.time()
-        if now - self._last_say < 1.2 and self.pending_line:
+        if now - self._last_say < 1.1 and self.pending_line:
             return
         self.pending_line = line
         self._last_say = now
@@ -73,7 +128,7 @@ class BehaviorLayer:
             return notes
         order = ("camera", "interact", "reset")
         tags = ("q_dash", "e_slash", "r_combo")
-        gaps = (self.q_gap, self.e_gap, self.r_gap)
+        gaps = (float(self.kit["q_gap"]), float(self.kit["e_gap"]), float(self.kit["r_gap"]))
         cds = [self.cd_q, self.cd_e, self.cd_r]
         i = self._rot % 3
         if now >= cds[i]:
@@ -81,15 +136,15 @@ class BehaviorLayer:
             notes.append(tags[i])
             if i == 0:
                 self.cd_q = now + gaps[0]
-                self._say("Q — Immortal Dash. gap closed.")
+                self._say(f"Q — {self.kit['q']}.")
             elif i == 1:
                 self.cd_e = now + gaps[1]
-                self._say("E — Air Slash. fight only.")
+                self._say(f"E — {self.kit['e']}. fight only.")
             else:
                 self.cd_r = now + gaps[2]
-                self._say("R — Deadpool Combo. finisher.")
+                self._say(f"R — {self.kit['r']}.")
             self._rot = (i + 1) % 3
-            self._next_rot_at = now + 0.85
+            self._next_rot_at = now + 0.8
         return notes
 
     def _steer(self, m, cx: float, strength: float = 0.7) -> None:
@@ -118,27 +173,28 @@ class BehaviorLayer:
             return notes
         dm = self._hist_motion[-1] - self._hist_motion[0]
         pred = loom * 0.5 + threat * 0.4 + max(0.0, dm) * 2.0
-        if pred < 0.35:
+        bias = float(self.kit.get("dodge_bias", 1.0))
+        if pred * bias < 0.32:
             return notes
         dcx = self._hist_cx[-1] - self._hist_cx[0]
         side = 1.0 if dcx >= 0 else -1.0
         self._pred_side = side
-        if now - self._last_dodge < 0.45:
+        if now - self._last_dodge < 0.42:
             return notes
         self._last_dodge = now
         if side > 0:
-            m[self.idx["left"]] += 0.9
-            m[self.idx["look_left"]] += 0.35
+            m[self.idx["left"]] += 0.95
+            m[self.idx["look_left"]] += 0.4
             notes.append("dodge_left")
         else:
-            m[self.idx["right"]] += 0.9
-            m[self.idx["look_right"]] += 0.35
+            m[self.idx["right"]] += 0.95
+            m[self.idx["look_right"]] += 0.4
             notes.append("dodge_right")
         m[self.idx["jump"]] += 0.55
-        m[self.idx["forward"]] -= 0.15
+        m[self.idx["forward"]] -= 0.12
         notes.append("predict_dodge")
-        self.pain = min(1.0, self.pain + 0.12)
-        self.anger = min(1.0, self.anger + 0.18)
+        self.pain = min(1.0, self.pain + 0.1)
+        self.anger = min(1.0, self.anger + 0.15)
         self._say("I see it coming. dodge.")
         return notes
 
@@ -167,17 +223,25 @@ class BehaviorLayer:
         if hit > 0:
             self.pain = min(1.0, self.pain + hit * 0.45)
             self.anger = min(1.0, self.anger + hit * 0.35)
+            self.weakness = min(1.0, self.weakness + hit * 0.3)
+            self._hits += 1
         else:
-            self.pain = max(0.0, self.pain - 0.04)
-            self.anger = max(0.0, self.anger - 0.025)
+            self.pain = max(0.0, self.pain - 0.035)
+            self.anger = max(0.0, self.anger - 0.02)
+            self.weakness = max(0.0, self.weakness - 0.015)
+        switched = self.maybe_switch_character(now)
+        notes = []
+        if switched:
+            notes.append(f"switch_{switched}")
         if water > 0.35:
             self.mode = "flee"
+            self.weakness = min(1.0, self.weakness + 0.15)
             m[self.idx["forward"]] -= 1.2
             m[self.idx["back"]] += 1.0
             m[self.idx["jump"]] += 0.55
             self._steer(m, 1.0 - float(meta.get("water_cx", 0.5)), 0.85)
             self._zero_kit(m)
-            notes = ["water_death"]
+            notes += ["water_death"]
             self._say("water is death. not walking in.")
             return np.clip(m, -1, 1), notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
         if lobby > 0.45 and portal < 0.25:
@@ -185,8 +249,7 @@ class BehaviorLayer:
             m[self.idx["forward"]] += 0.6
             self._steer(m, rail_cx, 0.55)
             self._zero_kit(m)
-            notes = ["leave_lobby"]
-            self._say("lobby is outside. moving.")
+            notes += ["leave_lobby"]
             return np.clip(m, -1, 1), notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
         if portal > 0.28:
             self.mode = "portal"
@@ -194,7 +257,7 @@ class BehaviorLayer:
             m[self.idx["sprint"]] += 0.3
             self._steer(m, portal_cx, 0.95)
             self._zero_kit(m)
-            notes = ["seek_portal"]
+            notes += ["seek_portal"]
             self._say("portal. combat world is through there.")
             return np.clip(m, -1, 1), notes, self._info(notes, food, motion, loom, water, lobby, threat, rail, portal)
         if self.manual_scare:
@@ -214,13 +277,14 @@ class BehaviorLayer:
             self.mode = "fight"
             self._fight_until = now + self.fight_seconds * (1.0 + 0.4 * self.anger)
             self._rot = 0
-            self._say("back in. Q, E, R. that's the whole kit.")
+            self._say(f"back in as {self.kit['label']}. Q, E, R.")
         if self.mode == "fight" and now >= self._fight_until:
             self.mode = "rail" if rail > 0.2 else "explore"
-        notes = []
         if threat > 0.25 or loom > 0.35:
             notes += self._predict_and_dodge(m, meta, now)
         fighting = self.mode == "fight"
+        aggro = float(self.kit["aggro"])
+        melee = float(self.kit["melee"])
         if self.mode == "flee":
             m[self.idx["forward"]] -= 0.65
             m[self.idx["back"]] += 0.7
@@ -229,11 +293,11 @@ class BehaviorLayer:
             self._zero_kit(m)
             notes += ["flee", "scared"]
         elif fighting:
-            push = 0.55 + 0.35 * self.anger
+            push = (0.5 + 0.35 * self.anger) * aggro
             m[self.idx["forward"]] += push
-            m[self.idx["sprint"]] += 0.25 + 0.2 * self.anger
-            m[self.idx["jump"]] += 0.2
-            m[self.idx["secondary"]] += 0.45
+            m[self.idx["sprint"]] += 0.2 + 0.2 * self.anger
+            m[self.idx["jump"]] += 0.18
+            m[self.idx["secondary"]] += melee
             notes += ["fight", "attack"]
             if self.anger > 0.55:
                 notes.append("angry")
@@ -245,7 +309,6 @@ class BehaviorLayer:
                 self.mode = "rail"
                 self._steer(m, rail_cx, 0.7)
                 notes += ["rail"]
-                self._say("on the rail. stay on it.")
             else:
                 self.mode = "explore"
                 notes += ["explore"]
@@ -269,10 +332,11 @@ class BehaviorLayer:
     def _info(self, notes, food, motion, loom, water, lobby, threat, rail, portal):
         return {
             "fear": self.fear, "pain": self.pain, "anger": self.anger,
-            "curiosity": self.curiosity, "arousal": self.arousal,
+            "weakness": self.weakness, "curiosity": self.curiosity, "arousal": self.arousal,
             "notes": notes, "food_score": food, "motion": motion, "loom_score": loom,
             "water_score": water, "lobby_score": lobby, "threat_score": threat,
             "rail_score": rail, "portal_score": portal,
-            "combat_mode": self.mode, "character": self.character, "rot": self._rot,
-            "pred_side": self._pred_side,
+            "combat_mode": self.mode, "character": self.character,
+            "char_label": self.kit["label"], "rot": self._rot, "pred_side": self._pred_side,
+            "hits": self._hits,
         }
