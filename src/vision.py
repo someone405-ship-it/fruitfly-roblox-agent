@@ -1,4 +1,4 @@
-"""Vision — Roblox-only capture + loom_score for escape circuit."""
+"""Vision — Roblox only (no agent mirror), fruit HSV food, loom."""
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -25,27 +25,40 @@ class VisionEncoder:
         self.prev_gray: Optional[np.ndarray] = None
         self.last_region: Optional[dict] = None
         self.last_meta: Dict[str, Any] = {}
+        self._last_title = ""
 
-    def _find_roblox_region(self):
+    def find_roblox_window_info(self):
         if gw is None:
             return None
         try:
-            wins = []
+            best = None
+            best_area = 0
             for w in gw.getAllWindows():
-                title = (w.title or "").lower()
-                if not title or "fruitfly" in title or "roblox" not in title:
+                title = w.title or ""
+                tl = title.lower()
+                if not tl or "fruitfly" in tl or "roblox" not in tl:
                     continue
-                if getattr(w, "visible", True) is False:
+                if w.width < 400 or w.height < 300:
                     continue
-                if w.width < 200 or w.height < 150:
-                    continue
-                wins.append(w)
-            if not wins:
-                return None
-            w = max(wins, key=lambda x: max(0, x.width) * max(0, x.height))
-            return {"left": int(w.left), "top": int(w.top), "width": int(w.width), "height": int(w.height)}
+                area = max(0, w.width) * max(0, w.height)
+                if area > best_area:
+                    best_area = area
+                    is_exp = "chrome" not in tl and "edge" not in tl and "firefox" not in tl
+                    best = {
+                        "left": int(w.left), "top": int(w.top),
+                        "width": int(w.width), "height": int(w.height),
+                        "title": title, "is_experience": is_exp,
+                    }
+            return best
         except Exception:
             return None
+
+    def _find_roblox_region(self):
+        info = self.find_roblox_window_info()
+        if not info:
+            return None
+        self._last_title = info.get("title", "")
+        return {k: info[k] for k in ("left", "top", "width", "height")}
 
     def capture(self, region=None) -> np.ndarray:
         if self.sct is None:
@@ -55,10 +68,12 @@ class VisionEncoder:
         if region is None:
             region = self._find_roblox_region()
         if region is None:
-            mons = self.sct.monitors
-            idx = min(max(1, self.monitor_index), len(mons) - 1)
-            mon = mons[idx]
-            region = {"left": mon["left"], "top": mon["top"], "width": mon["width"], "height": mon["height"]}
+            frame = np.zeros((CAPTURE_H, CAPTURE_W, 3), dtype=np.uint8)
+            cv2.putText(frame, "NO ROBLOX WINDOW", (40, CAPTURE_H // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 180, 255), 2)
+            self.last_frame = frame
+            self.last_meta = {"motion": 0, "food_score": 0, "loom_score": 0, "no_roblox": True}
+            return frame
         self.last_region = region
         try:
             shot = self.sct.grab(region)
@@ -83,7 +98,8 @@ class VisionEncoder:
         feats.append(hist)
         sx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
         sy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-        feats.append(np.array([float(np.mean(np.abs(sx))), float(np.mean(np.abs(sy))), float(np.std(sx)), float(np.std(sy))], dtype=np.float32))
+        feats.append(np.array([float(np.mean(np.abs(sx))), float(np.mean(np.abs(sy))),
+                               float(np.std(sx)), float(np.std(sy))], dtype=np.float32))
         motion = 0.0
         if self.prev_gray is not None:
             diff = np.abs(gray - self.prev_gray)
@@ -112,7 +128,8 @@ class VisionEncoder:
         q = [float(gray[r:r + h2, c:c + w2].mean()) for r in (0, h2) for c in (0, w2)]
         feats.append(np.array(q, dtype=np.float32))
         h4, w4 = max(1, CAPTURE_H // 4), max(1, CAPTURE_W // 4)
-        grid = [float(gray[r:r + h4, c:c + w4].mean()) for r in range(0, CAPTURE_H, h4) for c in range(0, CAPTURE_W, w4)]
+        grid = [float(gray[r:r + h4, c:c + w4].mean())
+                for r in range(0, CAPTURE_H, h4) for c in range(0, CAPTURE_W, w4)]
         feats.append(np.array(grid[:16], dtype=np.float32))
         small = cv2.resize(gray, (10, 6), interpolation=cv2.INTER_AREA).ravel().astype(np.float32)
         feats.append(small)
@@ -128,8 +145,16 @@ class VisionEncoder:
         else:
             vec = vec[:N_SENSORY]
         np.clip(vec, 0.0, 1.0, out=vec)
-        b, g, r = float(means[0]), float(means[1]), float(means[2])
-        food_score = max(0.0, g - b * 0.5) + max(0.0, r - b * 0.4)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask_y = cv2.inRange(hsv, (18, 80, 80), (40, 255, 255))
+        mask_r1 = cv2.inRange(hsv, (0, 90, 70), (12, 255, 255))
+        mask_r2 = cv2.inRange(hsv, (165, 90, 70), (180, 255, 255))
+        mask_g = cv2.inRange(hsv, (35, 60, 60), (85, 255, 255))
+        food_mask = cv2.bitwise_or(mask_y, cv2.bitwise_or(mask_r1, cv2.bitwise_or(mask_r2, mask_g)))
+        food_ratio = float(np.count_nonzero(food_mask)) / float(food_mask.size)
+        food_score = 0.0
+        if 0.004 < food_ratio < 0.25:
+            food_score = min(1.0, food_ratio * 12.0)
         y0, y1 = max(0, cy0 - 40), min(CAPTURE_H, cy0 + 40)
         x0, x1 = max(0, cx0 - 50), min(CAPTURE_W, cx0 + 50)
         center_patch = gray[y0:y1, x0:x1]
@@ -139,7 +164,11 @@ class VisionEncoder:
             center_motion = 0.0
         center_dark = float(np.mean(center_patch < 0.35))
         loom_score = float(np.clip(center_motion * 4.0 + center_dark * 0.5, 0.0, 1.0))
-        self.last_meta = {"motion": motion, "food_score": food_score, "brightness": float(gray.mean()), "edge": edge, "center_bright": center, "loom_score": loom_score}
+        self.last_meta = {
+            "motion": motion, "food_score": food_score, "brightness": float(gray.mean()),
+            "edge": edge, "center_bright": center, "loom_score": loom_score,
+            "no_roblox": False, "window_title": self._last_title,
+        }
         return vec
 
     def close(self) -> None:
