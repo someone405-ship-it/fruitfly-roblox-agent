@@ -1,4 +1,4 @@
-"""FruitFly Roblox Agent — arena gate, SendInput motor, 3D mouse."""
+"""FruitFly Roblox Agent — combat mode stats."""
 from __future__ import annotations
 import sys
 import time
@@ -89,6 +89,8 @@ class AgentWorker(QThread):
                 actions = [a for a in actions if not a.startswith("look_")]
                 if "explore" in notes and "forward" not in actions and float(motor[0]) > 0.15:
                     actions.insert(0, "forward")
+                if "attack" in notes and "secondary" not in actions:
+                    actions.append("secondary")
                 sent = self.motor.apply(actions, motor.tolist())
                 chat = self.behavior.take_chat()
                 if chat:
@@ -101,10 +103,9 @@ class AgentWorker(QThread):
                 self.motor_ready.emit({n: float(motor[i]) for i, n in enumerate(MOTOR_NAMES)}, actions)
                 if sent:
                     tag = ",".join(notes) if notes else ""
-                    esc = " ESCAPE" if cread.get("escape") else ""
-                    self.log_ready.emit(f"-> {', '.join(sent)} | {tag}{esc} | spk={info['n_spikes']}")
+                    self.log_ready.emit(f"-> {', '.join(sent)} | {tag} | spk={info['n_spikes']}")
                 self.status_ready.emit(
-                    f"WATCH ONLY — fear={binfo.get('fear',0):.2f} gf={cread.get('gf_rate',0):.2f}"
+                    f"{binfo.get('combat_mode','?')} fear={binfo.get('fear',0):.2f} water={binfo.get('water_score',0):.2f}"
                 )
             except Exception as e:
                 self.log_ready.emit(f"error: {e}")
@@ -123,20 +124,19 @@ class AgentWorker(QThread):
         self.motor.focus_roblox()
         ok = input_lock.lock()
         self._paused = False
-        self.log_ready.emit("START — watch only" if ok else "START — fly on (no lock)")
+        self.log_ready.emit("START — watch only" if ok else "START — fly on")
 
     def stop_fly(self) -> None:
         self._paused = True
         self.motor.release_all()
         input_lock.unlock()
         self.log_ready.emit("STOP — unlocked")
-        self.status_ready.emit("stopped")
 
     def emergency(self) -> None:
         self._paused = True
         self.motor.emergency_stop()
         input_lock.unlock()
-        self.log_ready.emit("F9 emergency — unlocked")
+        self.log_ready.emit("F9 emergency")
 
     def stop(self) -> None:
         self._running = False
@@ -285,7 +285,7 @@ class MainWindow(QMainWindow):
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("Join Superhero Arena first, then START. SCARE=startle. F9=stop.")
+        self.setup_lbl.setText("Join Superhero Arena first, then START. Water=death. Fight cycle on.")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
@@ -301,11 +301,9 @@ class MainWindow(QMainWindow):
         if not info:
             self.log_view.append("No Roblox window — join Superhero Arena first")
             return False
-        title = (info.get("title") or "").lower()
         self.log_view.append(f"Roblox window: {info.get('title')}")
-        if "superhero" in title or "arena" in title:
-            return True
-        if info.get("is_experience"):
+        title = (info.get("title") or "").lower()
+        if "superhero" in title or "arena" in title or info.get("is_experience"):
             return True
         self.log_view.append("Press Play on Superhero Arena so you are in the game")
         return False
@@ -322,7 +320,7 @@ class MainWindow(QMainWindow):
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — STOP/F9 unlocks. Keep Superhero Arena focused.")
+        self.watch_lbl.setText("WATCH ONLY — STOP/F9. Water=back off. Danger=flee then fight.")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -337,7 +335,7 @@ class MainWindow(QMainWindow):
     def _on_scare(self) -> None:
         try:
             self.worker.behavior.scare()
-            self.log_view.append("SCARE — fear spike")
+            self.log_view.append("SCARE — flee then fight")
         except Exception as e:
             self.log_view.append(f"scare failed: {e}")
 
@@ -367,8 +365,7 @@ class MainWindow(QMainWindow):
     def _on_motor(self, d: dict, a: list) -> None:
         self.motor_panel.set_motor(d, a)
         try:
-            dx, dy = self.worker.motor.last_mouse
-            self.mouse3d.set_delta(dx, dy)
+            self.mouse3d.set_delta(*self.worker.motor.last_mouse)
         except Exception:
             pass
 
@@ -379,7 +376,8 @@ class MainWindow(QMainWindow):
             f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
             f"fear={info.get('fear',0):.2f} arousal={info.get('arousal',0):.2f}\n"
             f"loom={info.get('loom_score',0):.2f} gf={info.get('gf_rate',0):.2f}\n"
-            f"food={info.get('food_score',0):.2f} lock={'ON' if input_lock.is_locked() else 'off'}"
+            f"food={info.get('food_score',0):.2f} water={info.get('water_score',0):.2f}\n"
+            f"mode={info.get('combat_mode','?')} lock={'ON' if input_lock.is_locked() else 'off'}"
         )
 
     def closeEvent(self, e) -> None:
