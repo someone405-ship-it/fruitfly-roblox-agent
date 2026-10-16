@@ -1,4 +1,4 @@
-"""FruitFly Roblox Agent — Deadpool kit + pain/anger stats."""
+"""FruitFly Roblox Agent — multi-hero + online train."""
 from __future__ import annotations
 import sys
 import time
@@ -52,13 +52,13 @@ class AgentWorker(QThread):
         self.auto_focus = True
         self.last_circuit = {}
         try:
-            self.trainer.bootstrap_explore(180)
+            self.trainer.bootstrap_explore(420)
         except Exception:
             pass
 
     def run(self) -> None:
         self._running = True
-        self.log_ready.emit("brain online — deadpool kit")
+        self.log_ready.emit("brain online — multi-hero + train")
         if self.trainer.samples:
             self.log_ready.emit(f"pre-train samples={self.trainer.samples}")
         self.worker_ready.emit()
@@ -106,6 +106,12 @@ class AgentWorker(QThread):
                 line = self.behavior.take_line()
                 if line:
                     self.log_ready.emit(f"fly: {line}")
+                try:
+                    rew = self.trainer.online_step(notes, meta, motor)
+                    if abs(rew) > 0.35 and self.brain.steps % 15 == 0:
+                        self.log_ready.emit(f"train r={rew:+.2f} n={self.trainer.samples}")
+                except Exception:
+                    pass
                 sent = self.motor.apply(actions, motor.tolist())
                 chat = self.behavior.take_chat()
                 if chat:
@@ -120,7 +126,7 @@ class AgentWorker(QThread):
                     tag = ",".join(notes) if notes else ""
                     self.log_ready.emit(f"-> {', '.join(sent)} | {tag} | spk={info['n_spikes']}")
                 self.status_ready.emit(
-                    f"{binfo.get('combat_mode','?')} pain={binfo.get('pain',0):.2f} anger={binfo.get('anger',0):.2f}"
+                    f"{binfo.get('combat_mode','?')} hero={binfo.get('char_label', binfo.get('character','?'))} pain={binfo.get('pain',0):.2f}"
                 )
             except Exception as e:
                 self.log_ready.emit(f"error: {e}")
@@ -300,7 +306,7 @@ class MainWindow(QMainWindow):
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("Deadpool: Q dash, E slash, R combo only in fights. Rail → portal. Pain/anger/dodge on.")
+        self.setup_lbl.setText("Heroes: Deadpool / Batman / War Machine. Weak → switch. Online train. E only in fight.")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
@@ -335,7 +341,7 @@ class MainWindow(QMainWindow):
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — STOP/F9. E only as Air Slash in fight.")
+        self.watch_lbl.setText("WATCH ONLY — STOP/F9. Weak → hero switch. E only in fight.")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -350,7 +356,7 @@ class MainWindow(QMainWindow):
     def _on_scare(self) -> None:
         try:
             self.worker.behavior.scare()
-            self.log_view.append("SCARE — pain up, flee then angry fight")
+            self.log_view.append("SCARE — pain up, may switch hero")
         except Exception as e:
             self.log_view.append(f"scare failed: {e}")
 
@@ -392,7 +398,8 @@ class MainWindow(QMainWindow):
             f"fear={info.get('fear',0):.2f} pain={info.get('pain',0):.2f} anger={info.get('anger',0):.2f}\n"
             f"loom={info.get('loom_score',0):.2f} gf={info.get('gf_rate',0):.2f}\n"
             f"food={info.get('food_score',0):.2f} water={info.get('water_score',0):.2f}\n"
-            f"mode={info.get('combat_mode','?')} kit={info.get('character','deadpool')}\n"
+            f"mode={info.get('combat_mode','?')} hero={info.get('char_label',info.get('character','?'))}\n"
+            f"weak={info.get('weakness',0):.2f} hits={info.get('hits',0)} train={self.worker.trainer.samples}\n"
             f"rail={info.get('rail_score',0):.2f} portal={info.get('portal_score',0):.2f}\n"
             f"lock={'ON' if input_lock.is_locked() else 'off'}"
         )
