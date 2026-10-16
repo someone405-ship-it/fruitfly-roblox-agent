@@ -1,4 +1,4 @@
-"""Online training — keys + eyes + skills + mistakes + wins."""
+"""Online training — keys + eyes + skills + mistakes + wins (GPU-safe)."""
 from __future__ import annotations
 import numpy as np
 from typing import Dict, List, Optional, Set
@@ -30,6 +30,34 @@ def _portal_target() -> np.ndarray:
 
 
 class Trainer:
+    def _rates_np(self):
+        try:
+            from .brain import _to_np
+            r = _to_np(self.brain.rate)
+            rs = _to_np(self.brain.rate_slow)
+            return (0.7 * r + 0.3 * rs).astype(np.float32)
+        except Exception:
+            r = np.asarray(self.brain.rate, dtype=np.float32)
+            rs = np.asarray(self.brain.rate_slow, dtype=np.float32)
+            return (0.7 * r + 0.3 * rs).astype(np.float32)
+
+    def _w_out_np(self):
+        try:
+            from .brain import _to_np
+            return _to_np(self.brain.W_out).astype(np.float32)
+        except Exception:
+            return np.asarray(self.brain.W_out, dtype=np.float32)
+
+    def _set_w_out(self, W):
+        try:
+            from .brain import _xp, _GPU
+            if _GPU:
+                self.brain.W_out = _xp.asarray(np.asarray(W, dtype=np.float32))
+            else:
+                self.brain.W_out = np.asarray(W, dtype=np.float32)
+        except Exception:
+            self.brain.W_out = np.asarray(W, dtype=np.float32)
+
     def __init__(self, brain, lr: float = 0.14) -> None:
         self.brain = brain
         self.lr = lr
@@ -59,12 +87,7 @@ class Trainer:
         if mode in ("imitation", "reward"):
             self.mode = mode
 
-    def record_host_keys(
-        self,
-        keys_down: List[str],
-        meta: Optional[dict] = None,
-        sensory: Optional[np.ndarray] = None,
-    ) -> None:
+    def record_host_keys(self, keys_down: List[str], meta: Optional[dict] = None, sensory: Optional[np.ndarray] = None) -> None:
         target = np.zeros(N_MOTOR, dtype=np.float32)
         for k in keys_down:
             idx = HOST_KEY_TO_MOTOR.get(k.lower())
@@ -93,18 +116,20 @@ class Trainer:
     def step_imitation(self) -> float:
         if not self.enabled:
             return 0.0
-        rate = 0.7 * self.brain.rate + 0.3 * self.brain.rate_slow
-        pred = self.brain.W_out @ rate
+        rate = self._rates_np()
+        W = self._w_out_np()
+        pred = W @ rate
         err = self._last_target - np.tanh(pred)
-        self.brain.W_out += self.imit_lr * np.outer(err, rate)
+        W = W + self.imit_lr * np.outer(err, rate)
         if self._last_sensory is not None and self.eye.count > 10:
             try:
                 eye_t = self.eye.nearest_target(self._last_sensory, k=4)
                 if float(np.abs(eye_t).sum()) > 0.05:
                     err2 = eye_t - np.tanh(pred)
-                    self.brain.W_out += self.eye_lr * np.outer(err2, rate)
+                    W = W + self.eye_lr * np.outer(err2, rate)
             except Exception:
                 pass
+        self._set_w_out(W)
         self.samples += 1
         self.imit_samples += 1
         self.last_err = float(np.mean(np.abs(err)))
@@ -149,22 +174,18 @@ class Trainer:
     def step_reward(self, reward: float) -> None:
         if not self.enabled:
             return
-        rate = 0.7 * self.brain.rate + 0.3 * self.brain.rate_slow
-        motor = self.brain.last_motor
-        self.brain.W_out += (self.lr * 0.9) * reward * np.outer(motor, rate)
-        self.brain.W_out *= 0.9996
+        rate = self._rates_np()
+        motor = np.asarray(self.brain.last_motor, dtype=np.float32)
+        W = self._w_out_np()
+        W = W + (self.lr * 0.9) * reward * np.outer(motor, rate)
+        W = W * 0.9996
+        self._set_w_out(W)
         self.samples += 1
         self.last_reward = reward
 
-    def _detect_and_record_mistakes(
-        self,
-        notes: List[str],
-        meta: dict,
-        motor: np.ndarray,
-        actions: Optional[List[str]] = None,
-    ) -> None:
+    def _detect_and_record_mistakes(self, notes, meta, motor, actions=None):
         acts = actions if actions is not None else self._last_actions
-        if "water_death" in notes or float(meta.get("death_event", 0)):
+        if "water_death" in notes or meta.get("death_event"):
             kind = "water_death" if "water_death" in notes else "death"
             self.mistakes.record(kind, notes, meta, motor, acts)
             self.last_mistake_msg = f"learned mistake:{kind}"
@@ -173,16 +194,11 @@ class Trainer:
             self.mistakes.record("fight_before_portal", notes, meta, motor, acts)
             self.last_mistake_msg = "learned mistake:fight_before_portal"
             self.step_reward(-1.0)
-        elif float(meta.get("death_event", False)):
+        elif meta.get("death_event"):
             self.mistakes.record("death", notes, meta, motor, acts)
             self.last_mistake_msg = "learned mistake:death"
 
-    def _detect_and_record_wins(
-        self,
-        notes: List[str],
-        meta: dict,
-        motor: np.ndarray,
-    ) -> None:
+    def _detect_and_record_wins(self, notes, meta, motor):
         if "kill" in notes:
             self.wins.record("kill", notes, meta, motor)
             self.step_reward(0.6)
@@ -191,13 +207,7 @@ class Trainer:
         elif "self_join" in notes or "join_game" in notes:
             self.wins.record("join", notes, meta, motor)
 
-    def apply_mistake_filters(
-        self,
-        motor: np.ndarray,
-        notes: List[str],
-        meta: dict,
-        actions: List[str],
-    ) -> tuple:
+    def apply_mistake_filters(self, motor, notes, meta, actions):
         m = motor.astype(np.float32).copy()
         if m.size < N_MOTOR:
             pad = np.zeros(N_MOTOR, dtype=np.float32)
@@ -206,17 +216,15 @@ class Trainer:
         try:
             avoid = self.mistakes.avoid_bias(meta, notes, strength=0.9)
             boost = self.wins.boost_bias(meta, notes, strength=0.35)
-            m = m + avoid + boost
-            m = np.clip(m, -1.5, 1.5).astype(np.float32)
+            m = np.clip(m + avoid + boost, -1.5, 1.5).astype(np.float32)
         except Exception:
             pass
         banned = self.mistakes.ban_actions(meta, notes)
         prefer = self.mistakes.prefer_actions(meta, notes)
         acts = [a for a in actions if a not in banned]
         for p in prefer:
-            if p not in acts and p not in banned:
-                if p in ("back", "left", "right", "forward", "sprint", "jump", "rmb_look"):
-                    acts.append(p)
+            if p not in acts and p not in banned and p in ("back", "left", "right", "forward", "sprint", "jump", "rmb_look"):
+                acts.append(p)
         self._last_actions = list(acts)
         try:
             self.mistakes.publish_runtime(meta, notes)
@@ -224,14 +232,7 @@ class Trainer:
             pass
         return m, acts, banned
 
-    def online_step(
-        self,
-        notes: List[str],
-        meta: dict,
-        motor: np.ndarray,
-        sensory: Optional[np.ndarray] = None,
-        actions: Optional[List[str]] = None,
-    ) -> float:
+    def online_step(self, notes, meta, motor, sensory=None, actions=None):
         if self.mode == "imitation":
             return self.step_imitation()
         if actions is not None:
@@ -245,25 +246,24 @@ class Trainer:
             boost = self.wins.boost_bias(meta, notes, strength=0.25)
             bias = bias + boost + avoid
             if float(np.abs(bias).sum()) > 0.05:
-                rate = 0.7 * self.brain.rate + 0.3 * self.brain.rate_slow
-                pred = self.brain.W_out @ rate
+                rate = self._rates_np()
+                W = self._w_out_np()
+                pred = W @ rate
                 err = np.clip(bias, -1.0, 1.0) - np.tanh(pred)
-                self.brain.W_out += 0.12 * np.outer(err, rate)
+                self._set_w_out(W + 0.12 * np.outer(err, rate))
         except Exception:
             pass
-
         self._detect_and_record_mistakes(notes, meta, motor, actions)
         self._detect_and_record_wins(notes, meta, motor)
         try:
             self.mistakes.publish_runtime(meta, notes)
         except Exception:
             pass
-
         r = self.reward_from_notes(notes, meta, motor)
         self.step_reward(r)
         return r
 
-    def bootstrap_explore(self, steps: int = 2800) -> None:
+    def bootstrap_explore(self, steps: int = 500) -> None:
         rng = np.random.default_rng(11)
         scenes = [
             dict(t=_portal_target(), tag="portal"),
@@ -294,11 +294,12 @@ class Trainer:
             elif tag == "join":
                 s[100:140] += 0.35
             self.brain.step(s)
-            rate = 0.7 * self.brain.rate + 0.3 * self.brain.rate_slow
-            pred = self.brain.W_out @ rate
+            rate = self._rates_np()
+            W = self._w_out_np()
+            pred = W @ rate
             err = target - np.tanh(pred)
             lr = self.lr * (1.3 if tag in ("portal", "join", "leave", "water_avoid") else 1.0)
-            self.brain.W_out += lr * np.outer(err, rate)
+            self._set_w_out(W + lr * np.outer(err, rate))
             self.samples += 1
             if i % 15 == 0:
                 try:
@@ -320,7 +321,4 @@ class Trainer:
         self.eye.save()
         self.mistakes.save()
         self.wins.save()
-        return (
-            f"{self.memory.summary()} | {self.eye.summary()} | "
-            f"{self.mistakes.summary()} | {self.wins.summary()}"
-        )
+        return f"{self.memory.summary()} | {self.eye.summary()} | {self.mistakes.summary()} | {self.wins.summary()}"
