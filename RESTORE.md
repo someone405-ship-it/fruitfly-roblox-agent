@@ -1,24 +1,21 @@
-# Restore main / behavior if empty
+# Restore + death rules
 
-If `src/main.py` or `src/behavior.py` is empty or `PLACEHOLDER`:
+## Death unreward rules
+- Stat **>= 1** → lose that stat (floor 0)
+- Stat **== 0** → **HURT** (no further loss; extra pain)
 
-```bash
-copy src\_fixed\main.py src\main.py
-copy src\_fixed\behavior.py src\behavior.py
-```
+## Free will decide
+Brain chooses actions; autopilot only nudges when motor already leans that way.
 
-Or on PowerShell:
+## If main.py / behavior.py empty
+
+Copy fixed builds (from this project artifacts or last good local):
 
 ```powershell
-Copy-Item src\_fixed\main.py src\main.py -Force
-Copy-Item src\_fixed\behavior.py src\behavior.py -Force
+Copy-Item artifacts\main.py.fixed src\main.py -Force
+Copy-Item artifacts\behavior.py.fixed src\behavior.py -Force
 ```
 
-Then:
+Then `python run_app.py`
 
-```bash
-python run_app.py
-```
-
-`src/motor.py` is already restored on main.
-`src/stats.py` death unreward is fixed.
+Tests run: zero-stat death → HURT only; mixed stats → lose where possible.
