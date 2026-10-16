@@ -1,28 +1,27 @@
-# FruitFly Roblox Agent — 65k FAST
+# FruitFly Roblox Agent — 98k FAST (video-style)
 
-**Block-sparse 65,536-neuron fruit-fly brain** plays Roblox: portal-first, ultra-fast mouse, learns from your **eyes + keys**, can ESC-leave and self-join games.
+Whole-brain-style fly agent: **vision in → 98,304 neurons → ultra-fast keys/mouse out**.
+Same idea as the connectome-in-a-game clips (FlyWire / MaleCNS controlling a body through a keyboard) — not their game, your Roblox loop.
 
 ## Scale
 
 | Spec | Value |
 |------|-------|
-| Neurons | **65,536** (8 columns × 8192 LIF) |
-| Real MaleCNS | ~140k–167k (full dense needs GPU connectome kernels) |
-| This build | Near-full practical CPU scale with sparse columns |
-| Sensory | 384-D vision |
-| Motors | 26 (incl. ESC, scroll, RMB look) |
+| Neurons | **98,304** (12 × 8192 block-sparse LIF) |
+| MaleCNS reference | ~140k–167k |
+| This build | ≈60–70% of whole-brain count, live on CPU |
+| Dense full brain | Needs GPU connectome kernels (not this app) |
+| Sensory | 384-D screen features |
+| Motors | 26 (WASD, look, LMB/RMB, Esc, scroll, abilities) |
+| Look | sens 78, max 140 px/tick, 6 ms interval |
 
-Inspired by [Desktop Fly](https://github.com/DenisSergeevitch/desktop-fly), [fly-self-driving](https://github.com/suanmiao/fly-self-driving), FlyWire / MaleCNS research.
+## Behavior
 
-## Features
-
-- **Ultra-fast mouse** — sens 62, up to 110px/tick, 8ms interval, micro-step bursts
-- **Portal-first** — never combat until portal/arena; portal ≠ danger
-- **LEARN FROM ME** — tracks keys **and** screen (eye pairs in `fly_eye_memory.npz`)
-- **Permanent skills** — `fly_skill_memory.json` + brain weights
-- **Leave / join** — ESC leave when bored/hurt; scroll + UI + click to join new games
-- **Explore** — hunt portal, rails, parkour, freelook
-- **Maximize Roblox** on launch/start
+- **Portal-first** — no combat until portal/arena; portal ≠ danger
+- **LEARN FROM ME** — keys **and** eyes (`fly_eye_memory.npz`)
+- **Leave / join** — Esc when bored/hurt/dead; scroll + UI + click to join
+- **Explore** — rails, parkour, freelook, lobby browse
+- **Permanent memory** — brain weights + skill JSON + eye pairs
 
 ## Run
 
@@ -35,15 +34,10 @@ pip install -r requirements.txt
 python run_app.py
 ```
 
-**START** — autonomy  
-**LEARN FROM ME** — you play; he copies keys + what he sees  
-**F9** — emergency stop + save  
+First launch after pull re-bootstraps (~1 min).
 
-Saved next to the app:
-- `fly_brain_weights.npz`
-- `fly_skill_memory.json`
-- `fly_eye_memory.npz`
+**START** · **LEARN FROM ME** · **F9** emergency + save
 
-First run after this upgrade re-bootstraps (architecture changed). Give it ~30–60s on start.
+Files: `fly_brain_weights.npz` · `fly_skill_memory.json` · `fly_eye_memory.npz`
 
 MIT. Absolute olliE.
