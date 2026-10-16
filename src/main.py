@@ -86,7 +86,8 @@ class AgentWorker(QThread):
                 info.update(binfo)
                 info.update(cread)
                 actions = self.brain.decide(motor, threshold=0.18)
-                actions = [a for a in actions if not a.startswith("look_")]
+                junk = {"ui_up", "ui_down", "ui_select", "emote", "crouch", "chat_toggle"}
+                actions = [a for a in actions if not a.startswith("look_") and a not in junk]
                 if any(t in notes for t in ("explore", "rail", "seek_portal", "fight", "attack")) and "forward" not in actions and float(motor[0]) > 0.08:
                     actions.insert(0, "forward")
                 if "attack" in notes and "secondary" not in actions:
@@ -306,7 +307,7 @@ class MainWindow(QMainWindow):
         if not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("Heroes: Deadpool / Batman / War Machine. Weak → switch. Online train. E only in fight.")
+        self.setup_lbl.setText("Heroes: Deadpool / Batman / War Machine. Portal+rail first. No UI spam.")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
@@ -341,7 +342,7 @@ class MainWindow(QMainWindow):
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("WATCH ONLY — STOP/F9. Weak → hero switch. E only in fight.")
+        self.watch_lbl.setText("WATCH ONLY — STOP/F9. Follows portal/rail. No chat spam.")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
