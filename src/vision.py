@@ -1,4 +1,4 @@
-"""Vision — capture Roblox only, never the FruitFly agent window."""
+"""Vision — Roblox-only capture + loom_score for escape circuit."""
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -33,11 +33,7 @@ class VisionEncoder:
             wins = []
             for w in gw.getAllWindows():
                 title = (w.title or "").lower()
-                if not title:
-                    continue
-                if "fruitfly" in title:
-                    continue
-                if "roblox" not in title:
+                if not title or "fruitfly" in title or "roblox" not in title:
                     continue
                 if getattr(w, "visible", True) is False:
                     continue
@@ -87,10 +83,7 @@ class VisionEncoder:
         feats.append(hist)
         sx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
         sy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-        feats.append(np.array([
-            float(np.mean(np.abs(sx))), float(np.mean(np.abs(sy))),
-            float(np.std(sx)), float(np.std(sy)),
-        ], dtype=np.float32))
+        feats.append(np.array([float(np.mean(np.abs(sx))), float(np.mean(np.abs(sy))), float(np.std(sx)), float(np.std(sy))], dtype=np.float32))
         motion = 0.0
         if self.prev_gray is not None:
             diff = np.abs(gray - self.prev_gray)
@@ -137,7 +130,16 @@ class VisionEncoder:
         np.clip(vec, 0.0, 1.0, out=vec)
         b, g, r = float(means[0]), float(means[1]), float(means[2])
         food_score = max(0.0, g - b * 0.5) + max(0.0, r - b * 0.4)
-        self.last_meta = {"motion": motion, "food_score": food_score, "brightness": float(gray.mean()), "edge": edge, "center_bright": center}
+        y0, y1 = max(0, cy0 - 40), min(CAPTURE_H, cy0 + 40)
+        x0, x1 = max(0, cx0 - 50), min(CAPTURE_W, cx0 + 50)
+        center_patch = gray[y0:y1, x0:x1]
+        if self.prev_gray is not None:
+            center_motion = float(np.mean(np.abs(center_patch - self.prev_gray[y0:y1, x0:x1])))
+        else:
+            center_motion = 0.0
+        center_dark = float(np.mean(center_patch < 0.35))
+        loom_score = float(np.clip(center_motion * 4.0 + center_dark * 0.5, 0.0, 1.0))
+        self.last_meta = {"motion": motion, "food_score": food_score, "brightness": float(gray.mean()), "edge": edge, "center_bright": center, "loom_score": loom_score}
         return vec
 
     def close(self) -> None:
