@@ -18,23 +18,22 @@ WARNING = "#FFC14D"
 MOTOR_POS = "#00E5FF"
 MOTOR_NEG = "#FF4D6A"
 
-# Practical advanced scale (full 80k dense reservoir would need ~25GB+ RAM).
-# 8192 LIF units + expanded sensory + permanent skill memory = smart fly.
-N_SENSORY = 256
-N_HIDDEN = 8192
+# ~12k reservoir — advanced practical scale (full dense 80k needs tens of GB).
+N_SENSORY = 320
+N_HIDDEN = 12288
 N_MOTOR = 22
-DT_MS = 12.0
-TAU_MEM = 16.0
-TAU_SLOW = 90.0
+DT_MS = 10.0
+TAU_MEM = 14.0
+TAU_SLOW = 85.0
 V_THRESH = 1.0
 V_RESET = 0.0
-NOISE_SCALE = 0.025
-SPARSITY = 0.08
-SPECTRAL_RADIUS = 0.97
+NOISE_SCALE = 0.022
+SPARSITY = 0.06
+SPECTRAL_RADIUS = 0.96
 
 CAPTURE_W = 480
 CAPTURE_H = 270
-FPS_TARGET = 30
+FPS_TARGET = 40
 
 MOTOR_NAMES = [
     "forward", "back", "left", "right", "jump", "sprint",
@@ -59,6 +58,12 @@ MONITOR_H = 360
 LOG_LINES = 300
 WEIGHTS_PATH = "fly_brain_weights.npz"
 SKILL_MEMORY_PATH = "fly_skill_memory.json"
+
+# Human-fast mouse (px per look tick)
+LOOK_SENSITIVITY = 38.0
+LOOK_MAX_PX = 72
+LOOK_INTERVAL = 0.012
+LOOK_DEADZONE = 0.06
 
 POWER_TIERS = [
     (0, 1.0, "dormant"),

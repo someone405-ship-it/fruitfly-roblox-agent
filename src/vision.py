@@ -1,4 +1,4 @@
-"""Vision — Roblox; kill-feed + death detect; rail/portal."""
+"""Vision — Roblox; kill-feed + death; rail/portal (portal NEVER counted as danger)."""
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -28,6 +28,7 @@ class VisionEncoder:
         self._last_title = ""
         self._prev_kill_score = 0.0
         self._prev_death_score = 0.0
+        self._prev_portal = 0.0
 
     def find_roblox_window_info(self):
         if gw is None:
@@ -78,7 +79,8 @@ class VisionEncoder:
                               "water_score": 0, "lobby_score": 0, "threat_score": 0,
                               "rail_score": 0, "portal_score": 0, "threat_cx": 0.5,
                               "kill_score": 0, "kill_event": False,
-                              "death_score": 0, "death_event": False}
+                              "death_score": 0, "death_event": False,
+                              "portal_event": False, "arena_hint": 0.0}
             return frame
         self.last_region = region
         try:
@@ -99,7 +101,7 @@ class VisionEncoder:
         self.prev_gray = self.last_gray
         self.last_gray = gray
         feats = []
-        hist = np.histogram(gray, bins=24, range=(0.0, 1.0))[0].astype(np.float32)
+        hist = np.histogram(gray, bins=28, range=(0.0, 1.0))[0].astype(np.float32)
         hist = hist / (hist.sum() + 1e-6)
         feats.append(hist)
         sx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
@@ -137,7 +139,7 @@ class VisionEncoder:
         grid = [float(gray[r:r + h4, c:c + w4].mean())
                 for r in range(0, CAPTURE_H, h4) for c in range(0, CAPTURE_W, w4)]
         feats.append(np.array(grid[:16], dtype=np.float32))
-        small = cv2.resize(gray, (10, 6), interpolation=cv2.INTER_AREA).ravel().astype(np.float32)
+        small = cv2.resize(gray, (12, 8), interpolation=cv2.INTER_AREA).ravel().astype(np.float32)
         feats.append(small)
         cy0, cx0 = CAPTURE_H // 2, CAPTURE_W // 2
         y0, y1 = max(0, cy0 - 30), min(CAPTURE_H, cy0 + 30)
@@ -153,11 +155,41 @@ class VisionEncoder:
         np.clip(vec, 0.0, 1.0, out=vec)
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        # --- PORTAL first (magenta / cyan / bright purple) — never threat ---
+        hsv_mid = hsv[int(CAPTURE_H * 0.12):int(CAPTURE_H * 0.88), :, :]
+        portal_m1 = cv2.inRange(hsv_mid, (125, 50, 90), (165, 255, 255))   # magenta/purple
+        portal_m2 = cv2.inRange(hsv_mid, (80, 70, 110), (110, 255, 255))    # cyan/teal portals
+        portal_m3 = cv2.inRange(hsv_mid, (140, 30, 160), (175, 180, 255))   # bright pink/white portal glow
+        portal_mask = cv2.bitwise_or(portal_m1, cv2.bitwise_or(portal_m2, portal_m3))
+        # dilate slightly for stable blob
+        portal_mask = cv2.morphologyEx(portal_mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        portal_ratio = float(np.count_nonzero(portal_mask)) / float(max(1, portal_mask.size))
+        portal_score = 0.0
+        portal_cx, portal_cy = 0.5, 0.5
+        if 0.002 < portal_ratio < 0.30:
+            portal_score = min(1.0, portal_ratio * 18.0)
+            ys, xs = np.where(portal_mask > 0)
+            if len(xs):
+                portal_cx = float(xs.mean()) / CAPTURE_W
+                portal_cy = float(np.clip(float(ys.mean()) / max(1, hsv_mid.shape[0]), 0.0, 1.0))
+        prev_p = float(self._prev_portal)
+        portal_event = portal_score > 0.35 and prev_p < 0.20
+        # entered portal: score was high then collapsed with motion burst
+        portal_passed = prev_p > 0.4 and portal_score < 0.12 and motion > 0.04
+        self._prev_portal = 0.88 * prev_p + 0.12 * portal_score
+
+        # food
         mask_y = cv2.inRange(hsv, (18, 80, 80), (40, 255, 255))
         mask_r1 = cv2.inRange(hsv, (0, 90, 70), (12, 255, 255))
         mask_r2 = cv2.inRange(hsv, (165, 90, 70), (180, 255, 255))
         mask_g = cv2.inRange(hsv, (35, 60, 60), (85, 255, 255))
         food_mask = cv2.bitwise_or(mask_y, cv2.bitwise_or(mask_r1, cv2.bitwise_or(mask_r2, mask_g)))
+        # remove portal pixels from food
+        if portal_mask is not None and portal_mask.shape[:2] == food_mask[int(CAPTURE_H * 0.12):int(CAPTURE_H * 0.88)].shape[:2]:
+            fm = food_mask[int(CAPTURE_H * 0.12):int(CAPTURE_H * 0.88)].copy()
+            fm[portal_mask > 0] = 0
+            food_mask[int(CAPTURE_H * 0.12):int(CAPTURE_H * 0.88)] = fm
         food_ratio = float(np.count_nonzero(food_mask)) / float(food_mask.size)
         food_score = 0.0
         if 0.004 < food_ratio < 0.25:
@@ -194,10 +226,25 @@ class VisionEncoder:
         if motion < 0.03 and border_bright > 0.15 and float(gray.mean()) > 0.25:
             lobby_score = min(1.0, border_bright * 2.0 + (0.04 - motion) * 8.0)
 
-        red1 = cv2.inRange(hsv, (0, 100, 80), (12, 255, 255))
-        red2 = cv2.inRange(hsv, (165, 100, 80), (180, 255, 255))
-        red_ratio = float(np.count_nonzero(cv2.bitwise_or(red1, red2))) / float(frame.shape[0] * frame.shape[1])
-        threat_score = float(np.clip(center_motion * 3.5 + red_ratio * 8.0 + loom_score * 0.5, 0.0, 1.0))
+        # THREAT = true enemy red, EXCLUDING portal mask regions
+        red1 = cv2.inRange(hsv, (0, 110, 90), (10, 255, 255))
+        red2 = cv2.inRange(hsv, (170, 110, 90), (180, 255, 255))
+        red_mask = cv2.bitwise_or(red1, red2)
+        # punch out portal area so purple portals never count as danger
+        mid_y0, mid_y1 = int(CAPTURE_H * 0.12), int(CAPTURE_H * 0.88)
+        if portal_score > 0.08:
+            sub = red_mask[mid_y0:mid_y1]
+            if sub.shape == portal_mask.shape:
+                sub[portal_mask > 0] = 0
+                red_mask[mid_y0:mid_y1] = sub
+        red_ratio = float(np.count_nonzero(red_mask)) / float(frame.shape[0] * frame.shape[1])
+        # when portal is dominant, force threat down
+        threat_raw = float(np.clip(center_motion * 3.2 + red_ratio * 9.0 + loom_score * 0.4, 0.0, 1.0))
+        if portal_score > 0.25:
+            threat_raw *= 0.15  # portal scene is not combat danger
+        elif portal_score > 0.12:
+            threat_raw *= 0.45
+        threat_score = threat_raw
 
         y0r, y1r = int(CAPTURE_H * 0.35), int(CAPTURE_H * 0.80)
         lower = gray[y0r:y1r, :]
@@ -212,24 +259,9 @@ class VisionEncoder:
         if peak < 0.25:
             rail_score *= 0.4
 
-        hsv_mid = hsv[int(CAPTURE_H * 0.15):int(CAPTURE_H * 0.85), :, :]
-        portal_m1 = cv2.inRange(hsv_mid, (125, 60, 80), (170, 255, 255))
-        portal_m2 = cv2.inRange(hsv_mid, (85, 80, 120), (105, 255, 255))
-        portal_mask = cv2.bitwise_or(portal_m1, portal_m2)
-        portal_ratio = float(np.count_nonzero(portal_mask)) / float(max(1, portal_mask.size))
-        portal_score = 0.0
-        portal_cx, portal_cy = 0.5, 0.5
-        if 0.003 < portal_ratio < 0.25:
-            portal_score = min(1.0, portal_ratio * 16.0)
-            ys, xs = np.where(portal_mask > 0)
-            if len(xs):
-                portal_cx = float(xs.mean()) / CAPTURE_W
-                portal_cy = float(np.clip(float(ys.mean()) / (CAPTURE_H * 0.7), 0.0, 1.0))
-
         threat_cx = 0.5
-        if red_ratio > 0.01:
-            rmask = cv2.bitwise_or(red1, red2)
-            ys, xs = np.where(rmask > 0)
+        if red_ratio > 0.008 and portal_score < 0.2:
+            ys, xs = np.where(red_mask > 0)
             if len(xs):
                 threat_cx = float(xs.mean()) / CAPTURE_W
 
@@ -257,6 +289,15 @@ class VisionEncoder:
         death_event = death_score > 0.42 and prev_ds < 0.25
         self._prev_death_score = 0.88 * prev_ds + 0.12 * death_score
 
+        # arena hint: high motion + low lobby + not pure portal UI
+        arena_hint = float(np.clip(
+            (0.0 if lobby_score > 0.4 else 0.35)
+            + (0.4 if motion > 0.04 else 0.0)
+            + (0.35 if kill_score > 0.15 else 0.0)
+            - (0.5 if portal_score > 0.3 else 0.0),
+            0.0, 1.0,
+        ))
+
         self.last_meta = {
             "motion": motion, "food_score": food_score, "brightness": float(gray.mean()),
             "edge": edge, "center_bright": center, "loom_score": loom_score,
@@ -265,9 +306,11 @@ class VisionEncoder:
             "lobby_score": lobby_score, "threat_score": threat_score,
             "rail_score": rail_score, "rail_cx": rail_cx,
             "portal_score": portal_score, "portal_cx": portal_cx, "portal_cy": portal_cy,
+            "portal_event": bool(portal_event), "portal_passed": bool(portal_passed),
             "threat_cx": threat_cx,
             "kill_score": kill_score, "kill_event": bool(kill_event),
             "death_score": death_score, "death_event": bool(death_event),
+            "arena_hint": arena_hint,
         }
         return vec
 
