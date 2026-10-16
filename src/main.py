@@ -1,4 +1,4 @@
-"""FruitFly Roblox Agent — full autonomy + LEARN FROM ME."""
+"""FruitFly Roblox Agent — 3072 neurons, kill/death, Figma UI."""
 from __future__ import annotations
 import sys
 import time
@@ -51,7 +51,6 @@ class AgentWorker(QThread):
         self.circuit = FlyCircuit(seed=3)
         self.auto_focus = True
         self.learning = False
-        self.last_circuit = {}
         try:
             self.trainer.bootstrap_explore(420)
         except Exception:
@@ -59,15 +58,7 @@ class AgentWorker(QThread):
 
     def run(self) -> None:
         self._running = True
-        self.log_ready.emit("brain online — full autonomy + instincts")
-        self.log_ready.emit(
-            "features: free-will goals, portal/rail, lock-in fight, circle-strafe, "
-            "dodge predict, parkour, browse/join games, social chat, forage, "
-            "patrol, camera curiosity, rest/fatigue, boredom, novelty, "
-            "personality drift, learn-from-me, multi-hero, pain/anger, "
-            "water avoid, lobby leave, soft-max goal pick, success memory, "
-            "QER kit rotate, sprint hunt, eyes+look, motor %"
-        )
+        self.log_ready.emit("brain online — 3072 neurons · kill/loot · death hurt · full autonomy")
         if self.trainer.samples:
             self.log_ready.emit(f"pre-train samples={self.trainer.samples}")
         self.worker_ready.emit()
@@ -89,9 +80,7 @@ class AgentWorker(QThread):
                     self.stats_ready.emit({**info, "learning": True, "imit_samples": self.trainer.imit_samples})
                     if keys:
                         self.log_ready.emit(f"learn <- {','.join(keys)} err={err:.3f} n={self.trainer.imit_samples}")
-                    elif self.brain.steps % 30 == 0:
-                        self.log_ready.emit(f"learn idle n={self.trainer.imit_samples}")
-                    self.status_ready.emit(f"LEARNING from you  samples={self.trainer.imit_samples}")
+                    self.status_ready.emit(f"LEARNING samples={self.trainer.imit_samples}")
                     self.msleep(20)
                     continue
 
@@ -108,7 +97,6 @@ class AgentWorker(QThread):
                 fwd_drive = max(0.0, float(motor[0]) * 0.5 + 0.4)
                 calm = max(0.0, 1.0 - loom - motion * 2)
                 cread = self.circuit.step(loom=loom, forward_drive=fwd_drive, turn=turn, calm=calm)
-                self.last_circuit = cread
                 cbias = self.circuit.motor_bias(cread)
                 motor, notes, binfo = self.behavior.modulate(motor, meta, circuit_bias=cbias)
                 info.update(binfo)
@@ -155,16 +143,14 @@ class AgentWorker(QThread):
                 if chat:
                     self.motor.type_text(chat)
                     sent.append(f'chat:"{chat}"')
-                    self.log_ready.emit(f"instinct chat -> {chat}")
                 self.frame_ready.emit(frame)
                 self.actions_ready.emit(actions)
                 self.stats_ready.emit(info)
                 self.motor_ready.emit({n: float(motor[i]) for i, n in enumerate(MOTOR_NAMES)}, actions)
                 if sent:
-                    tag = ",".join(notes) if notes else ""
-                    self.log_ready.emit(f"-> {', '.join(sent)} | {tag} | spk={info['n_spikes']}")
+                    self.log_ready.emit(f"-> {', '.join(sent)} | {','.join(notes)} | spk={info['n_spikes']}")
                 self.status_ready.emit(
-                    f"{binfo.get('combat_mode','?')} goal={binfo.get('goal','?')} hero={binfo.get('char_label', binfo.get('character','?'))} pain={binfo.get('pain',0):.2f}"
+                    f"{binfo.get('combat_mode','?')} goal={binfo.get('goal','?')} power={binfo.get('power','?')} pain={binfo.get('pain',0):.2f}"
                 )
             except Exception as e:
                 self.log_ready.emit(f"error: {type(e).__name__}: {e}")
@@ -184,13 +170,13 @@ class AgentWorker(QThread):
         self.motor.focus_roblox()
         ok = input_lock.lock()
         self._paused = False
-        self.log_ready.emit("START — full autonomy" if ok else "START — fly on")
+        self.log_ready.emit("START — autonomy" if ok else "START")
 
     def stop_fly(self) -> None:
         self._paused = True
         self.motor.release_all()
         input_lock.unlock()
-        self.log_ready.emit("STOP — unlocked")
+        self.log_ready.emit("STOP")
 
     def emergency(self) -> None:
         self._paused = True
@@ -234,14 +220,15 @@ class MainWindow(QMainWindow):
     def _ss(self) -> str:
         return f"""
         QMainWindow, QWidget {{ background:{BG_DEEP}; color:{TEXT_PRIMARY}; font-family:Segoe UI,sans-serif; }}
-        QFrame#panel {{ background:{BG_PANEL}; border:1px solid {BORDER}; border-radius:12px; }}
-        QPushButton {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:8px; padding:10px 18px; font-weight:600; }}
+        QFrame#panel {{ background:{BG_PANEL}; border:1px solid {BORDER}; border-radius:14px; }}
+        QPushButton {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:10px; padding:10px 18px; font-weight:600; }}
+        QPushButton:hover {{ border-color:{ACCENT}; }}
         QPushButton#startBtn {{ background:{SUCCESS}; color:#0B0E14; border:none; font-size:15px; min-width:130px; }}
         QPushButton#stopBtn {{ background:{DANGER}; color:white; border:none; font-size:15px; min-width:130px; }}
         QPushButton:disabled {{ color:{TEXT_SECONDARY}; }}
-        QTextEdit {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:8px;
+        QTextEdit {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:10px;
                      color:{TEXT_SECONDARY}; font-family:Consolas,monospace; font-size:12px; }}
-        QLabel#title {{ color:{ACCENT}; font-size:18px; font-weight:700; }}
+        QLabel#title {{ color:{ACCENT}; font-size:18px; font-weight:700; letter-spacing:0.5px; }}
         QLabel#setupLbl {{ color:{TEXT_SECONDARY}; font-size:13px; padding:8px; }}
         QLabel#watchLbl {{ color:{DANGER}; font-size:13px; font-weight:700; padding:6px; }}
         QStatusBar {{ background:{BG_PANEL}; color:{TEXT_SECONDARY}; }}
@@ -251,7 +238,8 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(14, 14, 14, 8)
+        root.setContentsMargins(16, 16, 16, 10)
+        root.setSpacing(10)
         header = QHBoxLayout()
         title = QLabel("FRUITFLY ROBLOX AGENT")
         title.setObjectName("title")
@@ -319,7 +307,7 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.stats_lbl)
         rl.addStretch()
         split.addWidget(right)
-        split.setSizes([560, 400, 400])
+        split.setSizes([560, 400, 420])
         root.addWidget(split, 1)
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -349,19 +337,16 @@ class MainWindow(QMainWindow):
         self._try_finish_setup()
 
     def _try_finish_setup(self) -> None:
-        if self._setup_done:
-            return
-        if not (self._worker_ok and self._roblox_ok):
+        if self._setup_done or not (self._worker_ok and self._roblox_ok):
             return
         self._setup_done = True
-        self.setup_lbl.setText("Full autonomy. Free-will goals. Can browse/join games. LEARN FROM ME trains him.")
+        self.setup_lbl.setText("3072 neurons · kill→food gamble · death→hurt · LEARN trains · free will")
         self.setup_lbl.setStyleSheet(f"color:{SUCCESS}; font-size:13px; font-weight:600;")
         self.btn_start.setVisible(True)
         self.btn_stop.setVisible(True)
         self.btn_scare.setVisible(True)
         self.btn_learn.setVisible(True)
         self.btn_start.setEnabled(True)
-        self.btn_stop.setEnabled(False)
 
     def _roblox_ready_for_play(self) -> bool:
         try:
@@ -383,13 +368,12 @@ class MainWindow(QMainWindow):
         if not is_roblox_running():
             launch_roblox(6.0)
         if not self._roblox_ready_for_play():
-            self.setup_lbl.setText("Open Roblox, then START")
             return
         self.worker.start_fly()
         self._flying = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.watch_lbl.setText("AUTONOMY ON — he picks goals. STOP/F9. LEARN trains him.")
+        self.watch_lbl.setText("AUTONOMY — kill rewards food · death hurts · STOP/F9")
         self.watch_lbl.setVisible(True)
 
     def _on_stop(self) -> None:
@@ -404,7 +388,7 @@ class MainWindow(QMainWindow):
     def _on_scare(self) -> None:
         try:
             self.worker.behavior.scare()
-            self.log_view.append("SCARE — pain then lock-in")
+            self.log_view.append("SCARE")
         except Exception as e:
             self.log_view.append(f"scare failed: {e}")
 
@@ -417,19 +401,17 @@ class MainWindow(QMainWindow):
                 self.btn_start.setEnabled(True)
                 self.btn_stop.setEnabled(False)
                 self.watch_lbl.setVisible(False)
-            ok = host_learn.start()
+            host_learn.start()
             self.worker.learning = True
             self.worker._paused = False
-            self.btn_learn.setText("LEARNING… (click to stop)")
-            self.log_view.append("LEARN FROM ME ON — play; he copies WASD/Shift/Space/QER")
-            if not ok:
-                self.log_view.append("learn: key capture failed")
+            self.btn_learn.setText("LEARNING… (stop)")
+            self.log_view.append("LEARN ON — play; he copies keys")
         else:
             host_learn.stop()
             self.worker.learning = False
             self.worker._paused = True
             self.btn_learn.setText("LEARN FROM ME")
-            self.log_view.append(f"LEARN OFF — samples={self.worker.trainer.imit_samples}")
+            self.log_view.append(f"LEARN OFF n={self.worker.trainer.imit_samples}")
 
     def _on_emergency(self) -> None:
         self.worker.emergency()
@@ -460,6 +442,7 @@ class MainWindow(QMainWindow):
         self.motor_panel.set_motor(d, a)
         try:
             self.mouse3d.set_delta(*self.worker.motor.last_mouse)
+            self.mouse3d.set_buttons(lmb=("secondary" in a), rmb=False)
         except Exception:
             pass
 
@@ -475,12 +458,11 @@ class MainWindow(QMainWindow):
         self.stats_lbl.setText(
             f"t={info.get('t_ms',0):.0f}ms steps={info.get('steps',0)}\n"
             f"spk={info.get('n_spikes',0)} rate={info.get('mean_rate',0):.3f}\n"
-            f"fear={info.get('fear',0):.2f} pain={info.get('pain',0):.2f} anger={info.get('anger',0):.2f}\n"
-            f"mode={info.get('combat_mode','?')} goal={info.get('goal','?')} hero={info.get('char_label',info.get('character','?'))}\n"
-            f"aggro={info.get('drv_aggression',0):.2f} curio={info.get('drv_curiosity',0):.2f} bore={info.get('drv_boredom',0):.2f}\n"
-            f"weak={info.get('weakness',0):.2f} hits={info.get('hits',0)} train={self.worker.trainer.samples}\n"
-            f"rail={info.get('rail_score',0):.2f} portal={info.get('portal_score',0):.2f}\n"
-            f"lock={'ON' if input_lock.is_locked() else 'off'} learn={self.worker.trainer.imit_samples}"
+            f"pain={info.get('pain',0):.2f} anger={info.get('anger',0):.2f}\n"
+            f"mode={info.get('combat_mode','?')} goal={info.get('goal','?')}\n"
+            f"kills={info.get('loot_kills',0)} deaths={info.get('deaths',0)} food={info.get('loot_food',0)}\n"
+            f"power={info.get('power','dormant')} x{info.get('power_mult',1):.2f} neurons=3072\n"
+            f"drop={info.get('loot_last_drop','-')} train={self.worker.trainer.samples}"
         )
 
     def closeEvent(self, e) -> None:
