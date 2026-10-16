@@ -1,12 +1,14 @@
-"""Online training — imitation + reward shaping + kill loot."""
+"""Online training — imitation + reward shaping + permanent skill memory."""
 from __future__ import annotations
 import numpy as np
-from typing import Dict, List
+from typing import Dict, List, Optional
 from .config import N_MOTOR, N_SENSORY
+from .skill_memory import SkillMemory
 
 HOST_KEY_TO_MOTOR: Dict[str, int] = {
     "w": 0, "s": 1, "a": 2, "d": 3, "space": 4, "shift": 5,
-    "e": 10, "q": 18, "r": 15, "ctrl": 16,
+    "e": 10, "q": 18, "r": 15, "ctrl": 16, "f": 21,
+    "rmb": 20, "lmb": 19,
 }
 
 
@@ -18,10 +20,10 @@ def _one_hot(idx: int, val: float = 1.0) -> np.ndarray:
 
 
 class Trainer:
-    def __init__(self, brain, lr: float = 0.18) -> None:
+    def __init__(self, brain, lr: float = 0.16) -> None:
         self.brain = brain
         self.lr = lr
-        self.imit_lr = 0.28
+        self.imit_lr = 0.32
         self.enabled = True
         self.mode = "reward"
         self._last_target = np.zeros(N_MOTOR, dtype=np.float32)
@@ -29,6 +31,8 @@ class Trainer:
         self.imit_samples = 0
         self.last_err = 0.0
         self.last_reward = 0.0
+        self.memory = SkillMemory()
+        self._last_keys: List[str] = []
 
     def set_enabled(self, on: bool) -> None:
         self.enabled = on
@@ -37,7 +41,7 @@ class Trainer:
         if mode in ("imitation", "reward"):
             self.mode = mode
 
-    def record_host_keys(self, keys_down: List[str]) -> None:
+    def record_host_keys(self, keys_down: List[str], meta: Optional[dict] = None) -> None:
         target = np.zeros(N_MOTOR, dtype=np.float32)
         for k in keys_down:
             idx = HOST_KEY_TO_MOTOR.get(k.lower())
@@ -45,7 +49,17 @@ class Trainer:
                 target[idx] = 1.0
         if target[0] > 0.5 and target[5] > 0.5:
             target[5] = 1.0
+        # RMB look bias
+        if "rmb" in [x.lower() for x in keys_down]:
+            target[20] = 1.0
+            target[6] = max(target[6], 0.4)
+            target[7] = max(target[7], 0.4)
         self._last_target = target
+        self._last_keys = list(keys_down)
+        try:
+            self.memory.record(keys_down, target, meta=meta or {}, tag="host")
+        except Exception:
+            pass
 
     def step_imitation(self) -> float:
         if not self.enabled:
@@ -57,6 +71,11 @@ class Trainer:
         self.samples += 1
         self.imit_samples += 1
         self.last_err = float(np.mean(np.abs(err)))
+        if self.imit_samples % 40 == 0:
+            try:
+                self.memory.save()
+            except Exception:
+                pass
         return self.last_err
 
     def reward_from_notes(self, notes: List[str], meta: dict, motor: np.ndarray) -> float:
@@ -95,6 +114,8 @@ class Trainer:
             r += 0.1
         if any(n.startswith("goal:") for n in notes):
             r += 0.05
+        if "rmb_look" in notes or "look(" in str(notes):
+            r += 0.05
         return float(np.clip(r, -1.5, 2.0))
 
     def step_reward(self, reward: float) -> None:
@@ -110,22 +131,34 @@ class Trainer:
     def online_step(self, notes: List[str], meta: dict, motor: np.ndarray) -> float:
         if self.mode == "imitation":
             return self.step_imitation()
+        # inject permanent memory bias into training target occasionally
+        try:
+            bias = self.memory.motor_bias_from_memory(meta, strength=0.22)
+            if float(np.abs(bias).sum()) > 0.05:
+                rate = 0.7 * self.brain.rate + 0.3 * self.brain.rate_slow
+                pred = self.brain.W_out @ rate
+                err = bias - np.tanh(pred)
+                self.brain.W_out += 0.08 * np.outer(err, rate)
+        except Exception:
+            pass
         r = self.reward_from_notes(notes, meta, motor)
         self.step_reward(r)
         return r
 
-    def bootstrap_explore(self, steps: int = 400) -> None:
+    def bootstrap_explore(self, steps: int = 500) -> None:
         rng = np.random.default_rng(11)
         scenes = [
-            dict(t=np.array([0.95, 0, 0, 0, 0.1, 0.4] + [0.0] * 14, dtype=np.float32)),
-            dict(t=np.array([0.5, 0, 0.85, 0, 0.2, 0.2] + [0.0] * 14, dtype=np.float32)),
-            dict(t=np.array([0.5, 0, 0, 0.85, 0.2, 0.2] + [0.0] * 14, dtype=np.float32)),
-            dict(t=np.array([0, 0.7, 0, 0, 0.5, 0.3] + [0.0] * 14, dtype=np.float32)),
+            dict(t=np.array([0.95, 0, 0, 0, 0.1, 0.4] + [0.0] * (N_MOTOR - 6), dtype=np.float32)),
+            dict(t=np.array([0.5, 0, 0.85, 0, 0.2, 0.2] + [0.0] * (N_MOTOR - 6), dtype=np.float32)),
+            dict(t=np.array([0.5, 0, 0, 0.85, 0.2, 0.2] + [0.0] * (N_MOTOR - 6), dtype=np.float32)),
+            dict(t=np.array([0, 0.7, 0, 0, 0.5, 0.3] + [0.0] * (N_MOTOR - 6), dtype=np.float32)),
             dict(t=_one_hot(18, 0.95)),
             dict(t=_one_hot(10, 0.95)),
             dict(t=_one_hot(15, 0.95)),
             dict(t=_one_hot(19, 0.9) + _one_hot(0, 0.7) + _one_hot(5, 0.4)),
             dict(t=_one_hot(0, 1.0) + _one_hot(5, 0.8) + _one_hot(19, 0.6)),
+            dict(t=_one_hot(20, 0.9) + _one_hot(7, 0.7)),  # rmb + look right
+            dict(t=_one_hot(20, 0.9) + _one_hot(6, 0.7)),  # rmb + look left
         ]
         err = np.zeros(1)
         for i in range(steps):
@@ -145,3 +178,7 @@ class Trainer:
             self.brain.W_out += self.lr * np.outer(err, rate)
             self.samples += 1
         self.last_err = float(np.mean(np.abs(err)))
+
+    def flush_memory(self) -> str:
+        self.memory.save()
+        return self.memory.summary()

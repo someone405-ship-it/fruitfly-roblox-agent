@@ -1,4 +1,4 @@
-"""Motor — SendInput keys/mouse + attack click. Q=dash."""
+"""Motor — SendInput keys/mouse + LMB attack + RMB look around."""
 from __future__ import annotations
 from typing import Set
 import time
@@ -21,6 +21,8 @@ INPUT_KEYBOARD = 1
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
 KEYEVENTF_KEYUP = 0x0002
 
 if hasattr(ctypes, "windll"):
@@ -55,9 +57,9 @@ KEY_MAP = {
     "jump": "space", "sprint": "shift", "interact": "e",
     "chat_toggle": "/", "ui_up": "up", "ui_down": "down",
     "ui_select": "enter", "reset": "r", "crouch": "ctrl",
-    "emote": "b", "camera": "q", "secondary": None,
+    "emote": "b", "camera": "q", "secondary": None, "rmb_look": None, "ability_f": "f",
 }
-PULSE_ACTIONS = {"chat_toggle", "interact", "reset", "emote", "camera", "ui_select"}
+PULSE_ACTIONS = {"chat_toggle", "interact", "reset", "emote", "camera", "ui_select", "ability_f"}
 KIT_ACTIONS = {"interact", "reset", "camera"}
 
 def _si_move(dx, dy):
@@ -76,22 +78,30 @@ def _si_key(vk, up=False):
     inp.union.ki = KEYBDINPUT(vk, scan, flags, 0, None)
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
+def _si_mouse_btn(flags):
+    if _SendInput is None or INPUT is None:
+        return False
+    inp = INPUT(); inp.type = INPUT_MOUSE
+    inp.union.mi = MOUSEINPUT(0, 0, 0, flags, 0, None)
+    return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+
 class MotorController:
     def __init__(self):
         self.active = set()
         self.enabled = True
         self.last_sent = []
         self.last_mouse = (0, 0)
-        self.look_sensitivity = 14.0
-        self.look_deadzone = 0.12
-        self.max_look_px = 28
+        self.look_sensitivity = 16.0
+        self.look_deadzone = 0.10
+        self.max_look_px = 32
         self._last_pulse = {}
         self._pulse_cooldown = 0.9
         self._last_look_t = 0.0
-        self._look_interval = 0.03
+        self._look_interval = 0.025
+        self._rmb_held = False
 
-    def focus_roblox(self):
-        """Bring Roblox to foreground so SendInput hits the game."""
+    def focus_roblox(self, maximize: bool = True):
+        """Bring Roblox to foreground (and maximize) so SendInput hits the game."""
         try:
             import ctypes
             from ctypes import wintypes
@@ -115,8 +125,14 @@ class MotorController:
             user32.EnumWindows(enum_cb, 0)
             if found:
                 hwnd = found[0]
-                user32.ShowWindow(hwnd, 9)
+                user32.ShowWindow(hwnd, 9)  # restore
+                if maximize:
+                    user32.ShowWindow(hwnd, 3)  # maximize
                 user32.SetForegroundWindow(hwnd)
+                try:
+                    user32.BringWindowToTop(hwnd)
+                except Exception:
+                    pass
                 return True
         except Exception:
             pass
@@ -131,6 +147,10 @@ class MotorController:
             w = max(wins, key=lambda x: max(0, x.width) * max(0, x.height))
             if w.isMinimized:
                 w.restore()
+            try:
+                w.maximize()
+            except Exception:
+                pass
             w.activate()
             return True
         except Exception:
@@ -182,11 +202,7 @@ class MotorController:
         return False
 
     def _left_click(self):
-        if _SendInput is not None and INPUT is not None:
-            for flags in (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP):
-                inp = INPUT(); inp.type = INPUT_MOUSE
-                inp.union.mi = MOUSEINPUT(0, 0, 0, flags, 0, None)
-                _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        if _si_mouse_btn(MOUSEEVENTF_LEFTDOWN) and _si_mouse_btn(MOUSEEVENTF_LEFTUP):
             return True
         if pydirectinput:
             try:
@@ -194,6 +210,21 @@ class MotorController:
             except Exception:
                 return False
         return False
+
+    def _rmb_down(self):
+        if self._rmb_held:
+            return True
+        ok = _si_mouse_btn(MOUSEEVENTF_RIGHTDOWN)
+        if ok:
+            self._rmb_held = True
+        return ok
+
+    def _rmb_up(self):
+        if not self._rmb_held:
+            return True
+        ok = _si_mouse_btn(MOUSEEVENTF_RIGHTUP)
+        self._rmb_held = False
+        return ok
 
     def apply(self, actions, motor_scores=None):
         if not self.enabled:
@@ -225,6 +256,9 @@ class MotorController:
                 continue
             if name not in self.active and self._keydown(key):
                 self.active.add(name); sent.append(name)
+
+        # Look + optional RMB hold for freelook
+        looking = False
         if motor_scores is not None and len(motor_scores) >= 10 and now - self._last_look_t >= self._look_interval:
             ll, lr = float(motor_scores[6]), float(motor_scores[7])
             lu, ld = float(motor_scores[8]), float(motor_scores[9])
@@ -233,10 +267,22 @@ class MotorController:
             if abs(raw_y) < self.look_deadzone: raw_y = 0.0
             dx = int(max(-self.max_look_px, min(self.max_look_px, raw_x * self.look_sensitivity)))
             dy = int(max(-self.max_look_px, min(self.max_look_px, raw_y * self.look_sensitivity * 0.85)))
+            want_rmb = "rmb_look" in desired or abs(raw_x) + abs(raw_y) > 0.35
+            if want_rmb:
+                if self._rmb_down():
+                    sent.append("rmb_hold")
+            else:
+                if self._rmb_held:
+                    self._rmb_up()
+                    sent.append("rmb_release")
             if (dx or dy) and self._move(dx, dy):
                 sent.append(f"look({dx},{dy})")
                 self.last_mouse = (dx, dy)
                 self._last_look_t = now
+                looking = True
+        if not looking and self._rmb_held and "rmb_look" not in desired:
+            self._rmb_up()
+
         if "secondary" in desired and now - self._last_pulse.get("secondary", 0) >= 0.35:
             if self._left_click():
                 sent.append("attack_click")
@@ -268,6 +314,8 @@ class MotorController:
             if key:
                 self._keyup(key)
         self.active.clear(); self.last_mouse = (0, 0)
+        if self._rmb_held:
+            self._rmb_up()
 
     def emergency_stop(self):
         self.enabled = False; self.release_all()

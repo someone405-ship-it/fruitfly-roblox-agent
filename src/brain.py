@@ -1,4 +1,4 @@
-"""LIF reservoir brain — power-iteration spectral radius."""
+"""LIF reservoir brain — power-iteration spectral radius, 8192 units."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Tuple
@@ -28,7 +28,7 @@ class FruitFlyBrain:
     def __init__(self, seed: int = 0) -> None:
         self.rng = np.random.default_rng(seed)
         rng = self.rng
-        self.W_in = rng.normal(0.0, 0.4, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
+        self.W_in = rng.normal(0.0, 0.35, size=(N_HIDDEN, N_SENSORY)).astype(np.float32)
         W = rng.normal(0.0, 1.0, size=(N_HIDDEN, N_HIDDEN)).astype(np.float32)
         W *= (rng.random(W.shape) < SPARSITY).astype(np.float32)
         signs = np.where(rng.random(N_HIDDEN) < 0.5, 1.0, -1.0).astype(np.float32)
@@ -37,7 +37,7 @@ class FruitFlyBrain:
         if radius > 1e-6:
             W *= np.float32(SPECTRAL_RADIUS / radius)
         self.W_rec = W
-        self.W_out = rng.normal(0.0, 0.25, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
+        self.W_out = rng.normal(0.0, 0.22, size=(N_MOTOR, N_HIDDEN)).astype(np.float32)
         self.v = np.zeros(N_HIDDEN, dtype=np.float32)
         self.v_slow = np.zeros(N_HIDDEN, dtype=np.float32)
         self.spikes = np.zeros(N_HIDDEN, dtype=np.float32)
@@ -87,6 +87,7 @@ class FruitFlyBrain:
             "mean_rate_slow": float(self.rate_slow.mean()),
             "mean_gain": float(self.gain.mean()),
             "total_spikes": self.total_spikes, "steps": self.steps,
+            "n_hidden": N_HIDDEN,
             "motor": {MOTOR_NAMES[i]: float(motor[i]) for i in range(min(N_MOTOR, motor.size))},
             "motor_vec": motor.copy(),
         }
