@@ -1,20 +1,11 @@
-# Full audit status (2026-10-16)
+# CRITICAL RESTORE — empty main.py / behavior.py
 
-## Tests passed (pure Python)
-- config 139255 / 26 motors / STAT_MAX
-- stats: 0 → HURT, 1+ → lose, max cap
-- runtime bans + reflex publish/look scale
-- potential + reflex portal force
-- mistake/win/skill/eye memory save-load
-- loot on_kill
-- circuit step
-- behavior modulate + death notes
+Remote `src/main.py` and `src/behavior.py` were wiped (0 bytes).
 
-## Not run here (needs Windows + RAM/GPU)
-- FruitFlyBrain full 139k init (OOM on tiny CI; fine on laptop GPU/CPU with 16GB+)
-- PyQt GUI / SendInput / Roblox window
+## Fix (Windows PowerShell)
 
-## If main/behavior empty after pull
+From the project folder that has `artifacts\*.fixed` (this Grok project):
+
 ```powershell
 Copy-Item artifacts\main.py.fixed src\main.py -Force
 Copy-Item artifacts\behavior.py.fixed src\behavior.py -Force
@@ -23,4 +14,14 @@ Copy-Item artifacts\motor.py.fixed src\motor.py -Force
 python run_app.py
 ```
 
-Or: `python -m src._rebuild_core` if artifacts are next to the repo.
+Or from a clone, place the `.fixed` files next to the repo and run:
+
+```powershell
+python -m src._rebuild_core
+```
+
+After restore, sizes should be:
+- main.py ~26 KB
+- behavior.py ~20 KB
+- motor.py ~13 KB
+- stats.py ~11 KB
